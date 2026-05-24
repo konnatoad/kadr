@@ -16,38 +16,23 @@ pub enum LuaEditorAction {
     Closed,
 }
 
-pub const EXAMPLE_SCRIPT: &str = r#"-- Ken Burns effect: slow zoom + pan + fade transition
-
-function on_advance(ctx)
-    -- reset opacity to 0 so each image fades in
-    return { opacity = 0.0 }
-end
+pub const EXAMPLE_SCRIPT: &str = r#"-- Ken Burns: gentle zoom + pan per slide.
+-- The crossfade between images is handled automatically by the engine;
+-- do NOT set opacity here — it would fight the built-in blend.
 
 function on_interval(ctx)
     local t = ctx.elapsed_secs / ctx.interval_secs
     t = math.max(0, math.min(1, t))
-    local e = t * t * (3 - 2 * t)  -- smoothstep
+    local e = t * t * (3 - 2 * t)  -- smoothstep easing
 
-    -- zoom from fit to 130%
-    local zoom = 1.0 + e * 0.3
+    -- zoom from fit size to 120%
+    local zoom = 1.0 + e * 0.2
 
-    -- gentle pan (alternates direction each image)
+    -- alternate pan direction between odd and even images
     local dir = (ctx.current_index % 2 == 0) and 1 or -1
-    local pan_x = dir * 0.04 * e
+    local pan_x = dir * 0.03 * e
 
-    -- fade in over first second, fade out over last second
-    local opacity = 1.0
-    if ctx.elapsed_secs < 1.0 then
-        opacity = ctx.elapsed_secs
-    elseif ctx.interval_secs - ctx.elapsed_secs < 1.0 then
-        opacity = ctx.interval_secs - ctx.elapsed_secs
-    end
-
-    return {
-        zoom_target = zoom,
-        pan_x       = pan_x,
-        opacity     = opacity,
-    }
+    return { zoom_target = zoom, pan_x = pan_x }
 end
 "#;
 
