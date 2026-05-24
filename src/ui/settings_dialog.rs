@@ -22,6 +22,7 @@ pub struct SettingsDialog {
 
     // Slideshow
     pub slideshow_interval: f64,
+    pub slideshow_transition: f32,
     pub slideshow_loop: bool,
     pub slideshow_random: bool,
 
@@ -62,6 +63,7 @@ impl Default for SettingsDialog {
             bg_color: [0.08, 0.08, 0.08],
             thumb_size: 80.0,
             slideshow_interval: 3.0,
+            slideshow_transition: 0.5,
             slideshow_loop: true,
             slideshow_random: false,
             lua_code: String::new(),
@@ -304,6 +306,18 @@ impl SettingsDialog {
             ui.label("Interval:");
             ui.add_space(8.0);
             ui.add(egui::Slider::new(&mut self.slideshow_interval, 0.5..=60.0).suffix(" s"));
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Crossfade:");
+            ui.add_space(8.0);
+            ui.add(
+                egui::Slider::new(&mut self.slideshow_transition, 0.0..=3.0)
+                    .suffix(" s")
+                    .custom_formatter(|v, _| {
+                        if v < 0.05 { "off".into() } else { format!("{v:.2} s") }
+                    }),
+            );
         });
         ui.add_space(4.0);
         ui.checkbox(&mut self.slideshow_loop,   "Loop");

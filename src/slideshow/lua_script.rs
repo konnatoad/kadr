@@ -18,13 +18,13 @@ pub struct SlideContext {
 
 #[derive(Debug, Default)]
 pub struct SlideCommand {
-    pub next_index:    Option<usize>,
-    pub new_interval:  Option<f64>,
-    pub zoom_target:   Option<f32>,
+    pub next_index:   Option<usize>,
+    pub new_interval: Option<f64>,
+    pub zoom_target:  Option<f32>,
     pub zoom_duration: Option<f32>,
-    pub pan_x:         Option<f32>,
-    pub pan_y:         Option<f32>,
-    pub opacity:       Option<f32>,
+    pub pan_x:    Option<f32>,
+    pub pan_y:    Option<f32>,
+    pub opacity:  Option<f32>,
 }
 
 impl LuaSlideshowScript {
@@ -84,12 +84,12 @@ fn fill_table(table: &Table, ctx: &SlideContext) -> LuaResult<()> {
 fn parse_command(table: &Table) -> SlideCommand {
     let f = |key| -> Option<f32> { table.get::<f64>(key).ok().map(|v| v as f32) };
     SlideCommand {
-        next_index:    table.get("next_index").ok(),
-        new_interval:  table.get("new_interval").ok(),
-        zoom_target:   f("zoom_target"),
+        next_index:   table.get("next_index").ok(),
+        new_interval: table.get("new_interval").ok(),
+        zoom_target:  f("zoom_target"),
         zoom_duration: f("zoom_duration"),
-        pan_x:         f("pan_x"),
-        pan_y:         f("pan_y"),
-        opacity:       f("opacity"),
+        pan_x:   f("pan_x"),
+        pan_y:   f("pan_y"),
+        opacity: f("opacity"),
     }
 }

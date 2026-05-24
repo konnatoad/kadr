@@ -44,7 +44,11 @@ pub struct SlideshowConfig {
     pub loop_mode: bool,
     pub random_order: bool,
     pub lua_script: String,
+    #[serde(default = "default_transition_secs")]
+    pub transition_secs: f32,
 }
+
+fn default_transition_secs() -> f32 { 0.5 }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -66,6 +70,7 @@ impl Default for AppConfig {
                 loop_mode: true,
                 random_order: false,
                 lua_script: String::new(),
+                transition_secs: 0.5,
             },
             keybinds: KeyBindings::default(),
             last_path: None,

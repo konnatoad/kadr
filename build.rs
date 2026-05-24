@@ -13,30 +13,58 @@ fn main() {
 }
 
 fn generate_ico(path: &str) {
-    let size: u32 = 32;
-    let pixels = make_icon_pixels(size);
-    let and_stride = ((size + 31) / 32) * 4;
-    let and_mask = vec![0u8; (and_stride * size) as usize];
-    let bmp_size = 40u32 + size * size * 4 + and_stride * size;
+    let sizes: &[u32] = &[16, 32, 48];
+    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| make_bmp_image(s)).collect();
+
+    let header_size = 6u32 + sizes.len() as u32 * 16;
+    let mut offsets = Vec::new();
+    let mut off = header_size;
+    for img in &images {
+        offsets.push(off);
+        off += img.len() as u32;
+    }
 
     let mut ico: Vec<u8> = Vec::new();
-    push_u16(&mut ico, 0); push_u16(&mut ico, 1); push_u16(&mut ico, 1);
-    ico.push(size as u8); ico.push(size as u8); ico.push(0); ico.push(0);
-    push_u16(&mut ico, 1); push_u16(&mut ico, 32);
-    push_u32(&mut ico, bmp_size);
-    push_u32(&mut ico, 22);
-    push_u32(&mut ico, 40);
-    push_i32(&mut ico, size as i32);
-    push_i32(&mut ico, (size * 2) as i32);
-    push_u16(&mut ico, 1); push_u16(&mut ico, 32);
-    for _ in 0..6 { push_u32(&mut ico, 0); }
-    ico.extend_from_slice(&pixels);
-    ico.extend_from_slice(&and_mask);
+    push_u16(&mut ico, 0);
+    push_u16(&mut ico, 1);
+    push_u16(&mut ico, sizes.len() as u16);
+
+    for (i, &s) in sizes.iter().enumerate() {
+        ico.push(if s >= 256 { 0 } else { s as u8 });
+        ico.push(if s >= 256 { 0 } else { s as u8 });
+        ico.push(0);
+        ico.push(0);
+        push_u16(&mut ico, 1);
+        push_u16(&mut ico, 32);
+        push_u32(&mut ico, images[i].len() as u32);
+        push_u32(&mut ico, offsets[i]);
+    }
+
+    for img in &images {
+        ico.extend_from_slice(img);
+    }
 
     std::fs::write(path, ico).expect("failed to write icon");
 }
 
-// BGRA pixel buffer, bottom-up row order (Windows BMP convention)
+fn make_bmp_image(size: u32) -> Vec<u8> {
+    let pixels = make_icon_pixels(size);
+    let and_stride = ((size + 31) / 32) * 4;
+    let and_mask = vec![0u8; (and_stride * size) as usize];
+
+    let mut bmp: Vec<u8> = Vec::new();
+    push_u32(&mut bmp, 40);
+    push_i32(&mut bmp, size as i32);
+    push_i32(&mut bmp, (size * 2) as i32);
+    push_u16(&mut bmp, 1);
+    push_u16(&mut bmp, 32);
+    for _ in 0..6 { push_u32(&mut bmp, 0); }
+    bmp.extend_from_slice(&pixels);
+    bmp.extend_from_slice(&and_mask);
+    bmp
+}
+
+// BGRA, bottom-up row order
 fn make_icon_pixels(size: u32) -> Vec<u8> {
     let fi = size as f32;
     let half = fi / 2.0;
@@ -50,15 +78,16 @@ fn make_icon_pixels(size: u32) -> Vec<u8> {
             let cx = fx - half;
             let cy = fy - half;
 
-            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.22);
-            let bg_a = smoothstep(0.6, -0.6, bg_d);
+            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
+            let bg_a = smoothstep(0.7, -0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
             let la = ka_alpha(fx, fy, fi);
-            // BGRA: R and B swapped vs RGBA
-            let b = lerp(16.0, 222.0, la) as u8;
-            let g = lerp(12.0, 220.0, la) as u8;
-            let r = lerp(12.0, 220.0, la) as u8;
+
+            // Blue bg (#63 9B FF) → white letters
+            let b = lerp(255.0, 255.0, la) as u8;
+            let g = lerp(155.0, 255.0, la) as u8;
+            let r = lerp(99.0,  255.0, la) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((bmp_row * size + px) * 4) as usize;
@@ -72,36 +101,35 @@ fn make_icon_pixels(size: u32) -> Vec<u8> {
 }
 
 fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
-    let sw  = size * 0.090;
-    let pad = size * 0.155;
+    let sw  = (size * 0.115).max(2.0);
+    let pad = size * 0.150;
     let h   = size - 2.0 * pad;
 
-    let k_stem_x  = pad + sw * 0.9;
-    let k_arm_x   = pad + size * 0.305;
-    let k_top     = pad;
-    let k_bot     = size - pad;
-    let k_mid     = pad + h * 0.50;
+    let k_stem_x = pad + sw * 0.85;
+    let k_arm_x  = pad + size * 0.310;
+    let k_top    = pad;
+    let k_bot    = size - pad;
+    let k_mid    = pad + h * 0.50;
 
     let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)
         .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))
         .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));
 
-    let a_ox       = pad + size * 0.405;
-    let a_bowl_cx  = a_ox + size * 0.145;
+    let a_ox       = pad + size * 0.410;
+    let a_bowl_cx  = a_ox + size * 0.148;
     let a_bowl_cy  = pad + h * 0.50;
-    let a_bowl_r   = h * 0.302;
-    let a_stem_x   = a_ox + size * 0.287;
-    let a_stem_top = pad + h * 0.18;
+    let a_bowl_r   = h * 0.295;
+    let a_stem_x   = a_ox + size * 0.290;
+    let a_stem_top = pad + h * 0.17;
 
     let dist_c  = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
     let angle   = (py - a_bowl_cy).atan2(px - a_bowl_cx);
-    let opening = px > a_bowl_cx && angle.abs() < 0.52;
+    let opening = px > a_bowl_cx && angle.abs() < 0.50;
     let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
 
     let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
 
-    let d = d_k.min(d_a);
-    smoothstep(sw + 0.6, sw - 0.6, d)
+    smoothstep(sw + 0.7, sw - 0.7, d_k.min(d_a))
 }
 
 fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
