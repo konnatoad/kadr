@@ -25,12 +25,17 @@ pub struct SettingsDialog {
     pub slideshow_loop: bool,
     pub slideshow_random: bool,
 
+    // Display
+    pub preferred_monitor: usize,
+
     // Lua — code lives here; editing happens in LuaEditor window
     pub lua_code: String,
     pub lua_error: Option<String>,
 
     /// Set to true when the user clicks "Edit Lua Script" — app.rs will open the editor
     pub open_lua_editor: bool,
+
+    pub monitors: Vec<crate::monitor::MonitorInfo>,
 }
 
 #[derive(PartialEq)]
@@ -48,11 +53,12 @@ impl Default for SettingsDialog {
             tab: SettingsTab::General,
             rebinding: None,
             show_thumbnails: true,
-            scan_subfolders: true,
+            scan_subfolders: false,
             filter_images: true,
             filter_videos: true,
             sort_mode: SortMode::Name,
             remember_last_folder: true,
+            preferred_monitor: 0,
             bg_color: [0.08, 0.08, 0.08],
             thumb_size: 80.0,
             slideshow_interval: 3.0,
@@ -61,6 +67,7 @@ impl Default for SettingsDialog {
             lua_code: String::new(),
             lua_error: None,
             open_lua_editor: false,
+            monitors: Vec::new(),
         }
     }
 }
@@ -157,6 +164,47 @@ impl SettingsDialog {
     }
 
     fn show_general(&mut self, ui: &mut Ui) {
+        // Populate monitor list lazily
+        if self.monitors.is_empty() {
+            self.monitors = crate::monitor::enumerate();
+        }
+
+        section_label(ui, "Display");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Open on:");
+            ui.add_space(8.0);
+            let current_label = if self.preferred_monitor == 0 {
+                "Auto (OS default)".to_owned()
+            } else {
+                self.monitors
+                    .get(self.preferred_monitor - 1)
+                    .map(|m| m.label())
+                    .unwrap_or_else(|| format!("Monitor {}", self.preferred_monitor))
+            };
+            egui::ComboBox::from_id_salt("settings_monitor")
+                .selected_text(current_label)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(self.preferred_monitor == 0, "Auto (OS default)").clicked() {
+                        self.preferred_monitor = 0;
+                    }
+                    for m in &self.monitors {
+                        let idx = m.index + 1;
+                        if ui.selectable_label(self.preferred_monitor == idx, m.label()).clicked() {
+                            self.preferred_monitor = idx;
+                        }
+                    }
+                });
+        });
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("Takes effect on next launch.")
+                .color(Color32::from_gray(90))
+                .size(11.0),
+        );
+
+        ui.add_space(12.0);
         section_label(ui, "View");
         ui.add_space(4.0);
         ui.checkbox(&mut self.show_thumbnails, "Show thumbnail strip");
