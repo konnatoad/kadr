@@ -1,0 +1,41 @@
+[package]
+name = "kadr"
+version = "1.0.0"
+edition = "2024"
+description = "A fast, minimal image viewer"
+
+[[bin]]
+name = "kadr"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+egui = "0.34"
+egui_extras = { version = "0.34", features = ["image"] }
+image = { version = "0.25", features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+rawloader = "0.37"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+walkdir = "2"
+rand = "0.9"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+rfd = "0.15"
+open = "5"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "shellapi"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.dev]
+opt-level = 1

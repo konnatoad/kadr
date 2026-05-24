@@ -1,0 +1,41 @@
+# Rust build output
+/target/
+
+# Debug symbols
+*.pdb
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Editor directories
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+kadr_*.log
+
+# cargo-wix output
+wix/target/
+*.msi
+*.wixobj
+*.wixpdb
+
+# Generated during build (written to OUT_DIR, not source tree)
+# assets/kadr.ico is intentionally NOT listed — it's not in the source tree
