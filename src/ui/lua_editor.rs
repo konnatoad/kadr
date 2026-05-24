@@ -76,7 +76,7 @@ impl LuaEditor {
             .open(&mut still_open)
             .resizable(true)
             .collapsible(false)
-            .min_size([500.0, 400.0])
+            .min_size([480.0, 160.0])
             .default_size([640.0, 500.0])
             .show(ctx, |ui| {
                 // ── Header bar ──────────────────────────────────────────
@@ -153,7 +153,9 @@ impl LuaEditor {
                 }
 
                 // ── Code editor ─────────────────────────────────────────
-                let available_h = ui.available_height() - 44.0; // reserve footer
+                // Reserve space for footer; clamp to at least 60px so the
+                // editor stays usable even when the window is dragged very small.
+                let available_h = (ui.available_height() - 44.0).max(60.0);
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                     let mut job = lua_highlight(buf.as_str());
                     job.wrap.max_width = wrap_width;
@@ -162,13 +164,14 @@ impl LuaEditor {
 
                 egui::ScrollArea::vertical()
                     .id_salt("lua_ed_scroll")
+                    .min_scrolled_height(available_h)
                     .max_height(available_h)
                     .show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.code)
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(f32::INFINITY)
-                                .desired_rows(24)
+                                .desired_rows(4)
                                 .layouter(&mut layouter),
                         );
                     });
