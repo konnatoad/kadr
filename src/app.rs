@@ -41,6 +41,11 @@ pub struct KadrApp {
     loading: Arc<Mutex<Option<LoadResult>>>,
     status_msg: Option<(String, std::time::Instant)>,
     video_player: Option<VideoPlayer>,
+    // Physical monitor rect to snap the window to on the first frame.
+    // Using SetWindowPos (physical px) is more reliable than with_position()
+    // which can be overridden by Windows' "remember window locations" feature.
+    #[cfg(windows)]
+    monitor_snap: Option<(i32, i32, u32, u32)>,
 }
 
 struct LoadResult {
@@ -85,6 +90,14 @@ impl KadrApp {
             loading: Arc::new(Mutex::new(None)),
             status_msg: None,
             video_player: None,
+            #[cfg(windows)]
+            monitor_snap: if config.preferred_monitor > 0 {
+                crate::monitor::enumerate()
+                    .get(config.preferred_monitor - 1)
+                    .map(|m| (m.x, m.y, m.width, m.height))
+            } else {
+                None
+            },
         };
 
         let restore = if config.remember_last_folder { config.last_path.clone() } else { None };
@@ -429,6 +442,36 @@ impl eframe::App for KadrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Force window onto the preferred monitor using physical-pixel SetWindowPos.
+        // This runs once on the first frame, after Windows has had its chance to
+        // apply its own "remember window locations" repositioning.
+        #[cfg(windows)]
+        if let Some((mx, my, mw, mh)) = self.monitor_snap.take() {
+            unsafe {
+                use std::os::windows::ffi::OsStrExt;
+                use winapi::shared::windef::RECT;
+                use winapi::um::winuser::{
+                    FindWindowW, GetWindowRect, SetWindowPos,
+                    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                };
+                let title: Vec<u16> = std::ffi::OsStr::new("kadr")
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
+                if !hwnd.is_null() {
+                    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    GetWindowRect(hwnd, &mut r);
+                    let ww = r.right - r.left;
+                    let wh = r.bottom - r.top;
+                    let x = mx + ((mw as i32 - ww) / 2).max(0);
+                    let y = my + ((mh as i32 - wh) / 2).max(0);
+                    SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
+        }
+
         // Poll async image load — guard dropped before mutable calls
         let load_result = self.loading.lock().unwrap().take();
         if let Some(result) = load_result {
@@ -449,10 +492,24 @@ impl eframe::App for KadrApp {
         // Slideshow tick
         if self.slideshow.tick() {
             self.navigate(1);
+            // Call on_advance so scripts can set initial state (e.g. opacity = 0 for fade-in).
+            // viewer_state.reset() already ran inside navigate(), so Lua overrides the defaults.
+            if !self.entries.is_empty() {
+                if let Some(lua) = &self.lua_script {
+                    let slide_ctx = SlideContext {
+                        current_index: self.current_index,
+                        total: self.entries.len(),
+                        interval_secs: self.slideshow.interval_secs(),
+                        elapsed_secs: 0.0,
+                    };
+                    if let Ok(cmd) = lua.on_advance(&slide_ctx) {
+                        apply_lua_cmd(&mut self.viewer_state, &cmd);
+                    }
+                }
+            }
             ctx.request_repaint();
         }
         if self.slideshow.active {
-            // Call Lua on_interval and apply zoom_target if provided
             if !self.entries.is_empty() {
                 if let Some(lua) = &self.lua_script {
                     let slide_ctx = SlideContext {
@@ -469,6 +526,7 @@ impl eframe::App for KadrApp {
                                 self.viewer_state.apply_lua_zoom(zoom_target, image_size, viewport);
                             }
                         }
+                        apply_lua_cmd(&mut self.viewer_state, &cmd);
                     }
                 }
             }
@@ -834,6 +892,12 @@ fn open_lua_editor_from_settings(
         settings.open_lua_editor = false;
         editor.open_with(&settings.lua_code);
     }
+}
+
+fn apply_lua_cmd(state: &mut crate::ui::viewer::ViewerState, cmd: &crate::slideshow::lua_script::SlideCommand) {
+    if let Some(v) = cmd.pan_x    { state.lua_pan.x   = v; }
+    if let Some(v) = cmd.pan_y    { state.lua_pan.y   = v; }
+    if let Some(v) = cmd.opacity  { state.lua_opacity  = v; }
 }
 
 fn apply_theme(ctx: &egui::Context) {

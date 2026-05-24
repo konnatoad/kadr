@@ -7,6 +7,7 @@ pub struct LuaEditor {
     pub open: bool,
     pub code: String,
     pub error: Option<String>,
+    show_vars: bool,
 }
 
 pub enum LuaEditorAction {
@@ -15,31 +16,44 @@ pub enum LuaEditorAction {
     Closed,
 }
 
-pub const EXAMPLE_SCRIPT: &str = r#"-- Example: steady zoom-in during each slide.
--- zoom_target is relative to fit-to-window:
---   1.0 = normal fit,  1.4 = 40 % larger than fit.
+pub const EXAMPLE_SCRIPT: &str = r#"-- Ken Burns effect: slow zoom + pan + fade transition
 
 function on_advance(ctx)
-    -- called when the slideshow advances to the next image
-    return {}
+    -- reset opacity to 0 so each image fades in
+    return { opacity = 0.0 }
 end
 
 function on_interval(ctx)
-    -- called ~10 times per second while a slide is shown
-    -- ctx.elapsed_secs  : seconds since this slide started
-    -- ctx.interval_secs : total display time for this slide
-    -- ctx.current_index : 0-based index of current image
-    -- ctx.total         : total number of images
-
     local t = ctx.elapsed_secs / ctx.interval_secs
-    local zoom = 1.0 + t * 0.4   -- zoom from 1.0x to 1.4x
-    return { zoom_target = zoom }
+    t = math.max(0, math.min(1, t))
+    local e = t * t * (3 - 2 * t)  -- smoothstep
+
+    -- zoom from fit to 130%
+    local zoom = 1.0 + e * 0.3
+
+    -- gentle pan (alternates direction each image)
+    local dir = (ctx.current_index % 2 == 0) and 1 or -1
+    local pan_x = dir * 0.04 * e
+
+    -- fade in over first second, fade out over last second
+    local opacity = 1.0
+    if ctx.elapsed_secs < 1.0 then
+        opacity = ctx.elapsed_secs
+    elseif ctx.interval_secs - ctx.elapsed_secs < 1.0 then
+        opacity = ctx.interval_secs - ctx.elapsed_secs
+    end
+
+    return {
+        zoom_target = zoom,
+        pan_x       = pan_x,
+        opacity     = opacity,
+    }
 end
 "#;
 
 impl Default for LuaEditor {
     fn default() -> Self {
-        Self { open: false, code: String::new(), error: None }
+        Self { open: false, code: String::new(), error: None, show_vars: false }
     }
 }
 
@@ -83,12 +97,49 @@ impl LuaEditor {
                             self.code = EXAMPLE_SCRIPT.to_owned();
                             self.error = None;
                         }
+                        ui.add_space(6.0);
+                        let vars_label = if self.show_vars { "▲ Variables" } else { "▼ Variables" };
+                        if ui.add(
+                            egui::Button::new(RichText::new(vars_label).size(12.0).color(Color32::from_gray(200)))
+                                .fill(Color32::from_rgba_premultiplied(255, 255, 255, 12))
+                                .stroke(Stroke::new(1.0, Color32::from_gray(60))),
+                        ).clicked() {
+                            self.show_vars = !self.show_vars;
+                        }
                     });
                 });
 
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
+
+                // ── Variable reference panel ─────────────────────────────
+                if self.show_vars {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_premultiplied(18, 18, 26, 255))
+                        .stroke(Stroke::new(1.0, Color32::from_gray(40)))
+                        .inner_margin(egui::Margin::symmetric(10i8, 8i8))
+                        .show(ui, |ui| {
+                            ui.columns(2, |cols| {
+                                // Left column: ctx.* inputs
+                                let ui = &mut cols[0];
+                                ui.label(RichText::new("ctx.*  (read-only inputs)").size(11.0).color(Color32::from_gray(110)));
+                                ui.add_space(4.0);
+                                for (name, typ, desc) in CTX_FIELDS {
+                                    var_row(ui, name, typ, desc);
+                                }
+
+                                // Right column: return value fields
+                                let ui = &mut cols[1];
+                                ui.label(RichText::new("return { … }  (output fields)").size(11.0).color(Color32::from_gray(110)));
+                                ui.add_space(4.0);
+                                for (name, typ, desc) in RETURN_FIELDS {
+                                    var_row(ui, name, typ, desc);
+                                }
+                            });
+                        });
+                    ui.add_space(6.0);
+                }
 
                 // ── Error banner ────────────────────────────────────────
                 if let Some(err) = &self.error {
@@ -141,8 +192,8 @@ impl LuaEditor {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new("Callbacks: on_advance(ctx)  on_interval(ctx)")
-                                .color(Color32::from_gray(100))
+                            RichText::new("on_advance(ctx)  ·  on_interval(ctx)  — click ▼ Variables for field list")
+                                .color(Color32::from_gray(85))
                                 .size(11.0),
                         );
                     });
@@ -159,6 +210,32 @@ impl LuaEditor {
 
         action
     }
+}
+
+// ── Variable reference data ──────────────────────────────────────────────────
+
+static CTX_FIELDS: &[(&str, &str, &str)] = &[
+    ("elapsed_secs",  "number",  "seconds elapsed since slide started"),
+    ("interval_secs", "number",  "total display time for this slide"),
+    ("current_index", "integer", "0-based index of the current image"),
+    ("total",         "integer", "total number of images in the folder"),
+];
+
+static RETURN_FIELDS: &[(&str, &str, &str)] = &[
+    ("zoom_target",  "number",  "zoom multiplier — 1.0 = fit, 1.4 = 40 % larger"),
+    ("pan_x",        "number",  "horizontal pan, fraction of viewport width"),
+    ("pan_y",        "number",  "vertical pan, fraction of viewport height"),
+    ("opacity",      "number",  "image opacity — 0.0 transparent, 1.0 opaque"),
+    ("next_index",   "integer", "jump to this image index on next advance"),
+    ("new_interval", "number",  "change the slide interval (seconds)"),
+];
+
+fn var_row(ui: &mut egui::Ui, name: &str, typ: &str, desc: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(name).monospace().size(12.0).color(Color32::from_rgb(130, 185, 255)));
+        ui.label(RichText::new(typ).size(11.0).color(Color32::from_gray(80)));
+        ui.label(RichText::new(desc).size(11.0).color(Color32::from_gray(130)));
+    });
 }
 
 // ── Syntax highlighting ──────────────────────────────────────────────────────
