@@ -162,9 +162,6 @@ impl KadrApp {
         if entry.media_type == MediaType::Video {
             let path = entry.path.clone();
             self.video_player = VideoPlayer::open(&path);
-            if let Some(ref mut vp) = self.video_player {
-                vp.play();
-            }
             return;
         }
 
@@ -265,13 +262,11 @@ impl KadrApp {
                 do_quit = i.modifiers.ctrl && i.key_pressed(egui::Key::Q);
             });
 
-            if let Some(ref mut vp) = self.video_player {
-                if space { vp.toggle(); }
-                if left  { vp.seek(-10_000); }
-                if right { vp.seek(10_000); }
-                if up    { vp.change_volume(100); }
-                if down  { vp.change_volume(-100); }
-            }
+            if space { VideoPlayer::play_pause(); }
+            if left  { VideoPlayer::seek_back(); }
+            if right { VideoPlayer::seek_fwd(); }
+            if up    { VideoPlayer::volume_up(); }
+            if down  { VideoPlayer::volume_down(); }
             if pgdn { self.navigate(1); }
             if pgup { self.navigate(-1); }
             if do_fullscreen {
@@ -601,27 +596,9 @@ impl eframe::App for KadrApp {
 
                 let is_video = self.entries[self.current_index].media_type == MediaType::Video;
                 if is_video {
-                    // Poll end-of-file
-                    if let Some(ref mut vp) = self.video_player {
-                        if vp.playing && vp.is_at_end() {
-                            vp.playing = false;
-                        }
-                    }
-
                     let file_name = self.entries[self.current_index].file_name.clone();
-                    let dur   = self.video_player.as_ref().map(|v| v.duration_ms).unwrap_or(0);
-                    let pos   = self.video_player.as_ref().map(|v| v.position_ms()).unwrap_or(0);
-                    let playing  = self.video_player.as_ref().map(|v| v.playing).unwrap_or(false);
-                    let volume   = self.video_player.as_ref().map(|v| v.volume).unwrap_or(800);
-                    let has_player = self.video_player.is_some();
-
-                    if playing {
-                        ctx.request_repaint_after(std::time::Duration::from_millis(250));
-                    }
-
                     let avail_h = ui.available_height();
-                    ui.add_space(((avail_h - 290.0) * 0.5).max(8.0));
-
+                    ui.add_space(((avail_h - 210.0) * 0.5).max(8.0));
                     ui.vertical_centered(|ui| {
                         draw_film_icon(ui);
                         ui.add_space(14.0);
@@ -630,84 +607,29 @@ impl eframe::App for KadrApp {
                                 .size(17.0)
                                 .color(Color32::from_gray(200)),
                         );
-
-                        if has_player {
-                            ui.add_space(20.0);
-
-                            // Progress bar (clickable)
-                            let bar_w = 380.0_f32;
-                            let bar_h = 6.0_f32;
-                            let (bar_rect, bar_resp) = ui.allocate_exact_size(
-                                egui::vec2(bar_w, bar_h),
-                                egui::Sense::click(),
-                            );
-                            let frac = if dur > 0 { (pos as f32 / dur as f32).clamp(0.0, 1.0) } else { 0.0 };
-                            ui.painter().rect_filled(bar_rect, 3.0, Color32::from_rgb(28, 28, 36));
-                            ui.painter().rect_filled(
-                                egui::Rect::from_min_size(
-                                    bar_rect.min,
-                                    egui::vec2(bar_rect.width() * frac, bar_h),
-                                ),
-                                3.0,
-                                Color32::from_rgb(99, 155, 255),
-                            );
-
-                            if bar_resp.clicked() {
-                                if let Some(click) = bar_resp.interact_pointer_pos() {
-                                    let t = ((click.x - bar_rect.min.x) / bar_rect.width()).clamp(0.0, 1.0);
-                                    let target = (t * dur as f32) as i64;
-                                    if let Some(ref mut vp) = self.video_player {
-                                        vp.seek(target - pos as i64);
-                                    }
-                                }
-                            }
-
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{}  /  {}",
-                                    fmt_duration(pos),
-                                    fmt_duration(dur)
-                                ))
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new("Playing in system player")
                                 .size(12.0)
-                                .color(Color32::from_gray(110))
-                                .monospace(),
-                            );
-
-                            ui.add_space(10.0);
-                            let state_label = if playing { "|  Playing" } else { ">  Paused" };
-                            ui.label(
-                                egui::RichText::new(state_label)
-                                    .size(13.0)
-                                    .color(Color32::from_gray(155)),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(format!("Vol  {}", volume / 10))
-                                    .size(11.0)
-                                    .color(Color32::from_gray(90))
-                                    .monospace(),
-                            );
-                        } else {
-                            ui.add_space(18.0);
-                            ui.label(
-                                egui::RichText::new("Format not supported — cannot play in-app")
-                                    .size(13.0)
-                                    .color(Color32::from_rgb(200, 90, 80)),
-                            );
-                        }
-
-                        ui.add_space(28.0);
+                                .color(Color32::from_gray(85)),
+                        );
+                        ui.add_space(30.0);
                         ui.label(
                             egui::RichText::new(
-                                "Space  play/pause     Left/Right  seek 10 s     Up/Down  volume     PageUp/Down  prev/next file",
+                                "Space  play/pause     Up/Down  volume     Left/Right  rewind/fwd     PageUp/Down  prev/next",
                             )
                             .size(10.5)
                             .color(Color32::from_gray(58))
                             .monospace(),
                         );
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("(click this window first to focus keyboard here)")
+                                .size(10.0)
+                                .color(Color32::from_gray(42))
+                                .italics(),
+                        );
                     });
-
                     return;
                 }
 
@@ -992,13 +914,6 @@ fn apply_theme(ctx: &egui::Context) {
         egui::FontId::new(11.0, egui::FontFamily::Proportional),
     );
     ctx.set_global_style(style);
-}
-
-fn fmt_duration(ms: u64) -> String {
-    let s = ms / 1000;
-    let m = s / 60;
-    let s = s % 60;
-    format!("{m}:{s:02}")
 }
 
 fn draw_film_icon(ui: &mut egui::Ui) {
