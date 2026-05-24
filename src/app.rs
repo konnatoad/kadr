@@ -45,6 +45,10 @@ pub struct KadrApp {
     prev_texture: Option<TextureHandle>,
     /// Pixel dimensions of `prev_texture`.
     prev_image_size: Vec2,
+    /// Zoom the outgoing image had at the moment the transition started.
+    prev_zoom: f32,
+    /// Pan offset the outgoing image had at the moment the transition started.
+    prev_offset: Vec2,
     /// Crossfade progress: 0.0 = fully prev, 1.0 = fully current.
     transition_t: f32,
     // Physical monitor rect to snap the window to on the first frame.
@@ -99,6 +103,8 @@ impl KadrApp {
             video_player: None,
             prev_texture: None,
             prev_image_size: Vec2::ZERO,
+            prev_zoom: 1.0,
+            prev_offset: Vec2::ZERO,
             transition_t: 1.0,
             #[cfg(windows)]
             monitor_snap: if config.preferred_monitor > 0 {
@@ -507,6 +513,11 @@ impl eframe::App for KadrApp {
             TickResult::Nothing => {}
 
             TickResult::BeginTransition => {
+                // Capture outgoing zoom/pan before reset so the prev image
+                // continues its Ken Burns motion during the crossfade.
+                self.prev_zoom   = self.viewer_state.zoom;
+                self.prev_offset = self.viewer_state.offset;
+
                 // Capture the outgoing image before advancing the index.
                 self.prev_texture   = self.current_texture.take();
                 self.prev_image_size = self.prev_texture.as_ref()
@@ -610,7 +621,7 @@ impl eframe::App for KadrApp {
             let prev_clone = self.prev_texture.clone();
             let transition = prev_clone.as_ref()
                 .filter(|_| self.current_texture.is_some())
-                .map(|p| TransitionData { prev_texture: p, prev_size: self.prev_image_size, t: self.transition_t });
+                .map(|p| TransitionData { prev_texture: p, prev_size: self.prev_image_size, prev_zoom: self.prev_zoom, prev_offset: self.prev_offset, t: self.transition_t });
             show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
             return;
         }
@@ -768,8 +779,10 @@ impl eframe::App for KadrApp {
                         .filter(|_| self.current_texture.is_some())
                         .map(|p| TransitionData {
                             prev_texture: p,
-                            prev_size: self.prev_image_size,
-                            t: self.transition_t,
+                            prev_size:    self.prev_image_size,
+                            prev_zoom:    self.prev_zoom,
+                            prev_offset:  self.prev_offset,
+                            t:            self.transition_t,
                         });
                     show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
                 } else {

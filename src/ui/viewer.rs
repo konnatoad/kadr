@@ -100,6 +100,10 @@ impl ViewerState {
 pub struct TransitionData<'a> {
     pub prev_texture: &'a TextureHandle,
     pub prev_size:    Vec2,
+    /// Zoom level the outgoing image had when the transition started.
+    pub prev_zoom:    f32,
+    /// Pan offset the outgoing image had when the transition started.
+    pub prev_offset:  Vec2,
     pub t:            f32,
 }
 
@@ -136,10 +140,11 @@ pub fn show_viewer(
     if let Some(ref tr) = transition {
         if tr.t < 1.0 && tr.prev_size.x > 0.0 && tr.prev_size.y > 0.0 {
             let prev_alpha = ((1.0 - tr.t) * 255.0) as u8;
-            let fit_scale = (available.x / tr.prev_size.x)
-                .min(available.y / tr.prev_size.y)
-                .min(1.0);
-            let prev_rect = Rect::from_center_size(rect.center(), tr.prev_size * fit_scale);
+            // Preserve the exact zoom + pan the outgoing image had so it
+            // continues its Ken Burns motion rather than snapping to fit-scale.
+            let prev_scaled = tr.prev_size * tr.prev_zoom;
+            let prev_center = rect.center() + tr.prev_offset;
+            let prev_rect   = Rect::from_center_size(prev_center, prev_scaled);
             ui.painter().image(
                 tr.prev_texture.id(),
                 prev_rect,
