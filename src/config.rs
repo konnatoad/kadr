@@ -14,10 +14,12 @@ pub struct AppConfig {
     pub thumbnail_size: f32,
     pub filter_images: bool,
     pub filter_videos: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub scan_subfolders: bool,
     #[serde(default = "default_true")]
     pub remember_last_folder: bool,
+    #[serde(default)]
+    pub preferred_monitor: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,8 +73,9 @@ impl Default for AppConfig {
             thumbnail_size: 80.0,
             filter_images: true,
             filter_videos: true,
-            scan_subfolders: true,
+            scan_subfolders: false,
             remember_last_folder: true,
+            preferred_monitor: 0,
         }
     }
 }
