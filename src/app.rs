@@ -576,9 +576,6 @@ impl eframe::App for KadrApp {
                         let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
                         self.viewer_state.apply_lua_zoom(v, sz, vp);
                     }
-                    if let Some(v) = cmd.pan_x    { self.viewer_state.lua_pan.x  = v; }
-                    if let Some(v) = cmd.pan_y    { self.viewer_state.lua_pan.y  = v; }
-                    if let Some(v) = cmd.opacity  { self.viewer_state.lua_opacity = v; }
                 }
                 apply_lua_cmd(&mut self.viewer_state, &cmd);
             }
