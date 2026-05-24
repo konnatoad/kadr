@@ -14,7 +14,7 @@ pub struct AppConfig {
     pub thumbnail_size: f32,
     pub filter_images: bool,
     pub filter_videos: bool,
-    #[serde(default)]
+    #[serde(skip)]
     pub scan_subfolders: bool,
     #[serde(default = "default_true")]
     pub remember_last_folder: bool,
