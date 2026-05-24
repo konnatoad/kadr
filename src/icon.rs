@@ -1,11 +1,11 @@
 pub fn egui_icon() -> egui::IconData {
-    let size = 48u32;
+    let size = 64u32;
     let rgba = icon_rgba(size);
     egui::IconData { rgba, width: size, height: size }
 }
 
 pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let fi = size as f32;
+    let fi   = size as f32;
     let half = fi / 2.0;
     let mut out = vec![0u8; (size * size * 4) as usize];
 
@@ -16,14 +16,17 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
             let cx = fx - half;
             let cy = fy - half;
 
-            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
-            let bg_a = smoothstep(0.7, -0.7, bg_d);
+            // Rounded-rect background
+            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.26);
+            let bg_a = smoothstep(0.8, -0.8, bg_d);
             if bg_a < 0.005 { continue; }
 
-            let la = ka_alpha(fx, fy, fi);
-            let r = lerp(99.0,  255.0, la) as u8;
-            let g = lerp(155.0, 255.0, la) as u8;
-            let b = lerp(255.0, 255.0, la) as u8;
+            let ha = heart_alpha(fx, fy, fi);
+
+            // Kadr accent blue (99, 155, 255) on dark bg (10, 10, 14)
+            let r = lerp(10.0,  99.0, ha) as u8;
+            let g = lerp(10.0, 155.0, ha) as u8;
+            let b = lerp(14.0, 255.0, ha) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((py * size + px) * 4) as usize;
@@ -36,52 +39,41 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     out
 }
 
-// ── "ka" letterforms ──────────────────────────────────────────────────────────
+// ── Heart ─────────────────────────────────────────────────────────────────────
 
-fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
-    let sw  = (size * 0.115).max(2.0);
-    let pad = size * 0.150;
-    let h   = size - 2.0 * pad;
+/// Fills the algebraic heart curve  (x²+y²−1)³ − x²y³ = 0
+/// with a slightly wavy edge for a hand-drawn feel.
+fn heart_alpha(px: f32, py: f32, size: f32) -> f32 {
+    let cx    = size * 0.50;
+    let cy    = size * 0.53; // shifted down slightly so the tip has room
+    let scale = size * 0.37;
 
-    let k_stem_x = pad + sw * 0.85;
-    let k_arm_x  = pad + size * 0.310;
-    let k_top    = pad;
-    let k_bot    = size - pad;
-    let k_mid    = pad + h * 0.50;
+    // Normalised coords, y pointing up
+    let x  = (px - cx) / scale;
+    let y  = -(py - cy) / scale;
+    let x2 = x * x;
+    let y2 = y * y;
+    let r2 = x2 + y2;
 
-    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));
+    // Algebraic heart: f < 0 → inside, f > 0 → outside
+    let f  = (r2 - 1.0).powi(3) - x2 * y2 * y;
 
-    let a_ox       = pad + size * 0.410;
-    let a_bowl_cx  = a_ox + size * 0.148;
-    let a_bowl_cy  = pad + h * 0.50;
-    let a_bowl_r   = h * 0.295;
-    let a_stem_x   = a_ox + size * 0.290;
-    let a_stem_top = pad + h * 0.17;
+    // Gradient → approximate signed distance in pixels
+    let gx   = 6.0 * x * (r2 - 1.0).powi(2) - 2.0 * x * y2 * y;
+    let gy   = 6.0 * y * (r2 - 1.0).powi(2) - 3.0 * x2 * y2;
+    let grad = (gx * gx + gy * gy).sqrt().max(0.01);
+    let dist = (f / grad) * scale;
 
-    let dist_c  = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
-    let angle   = (py - a_bowl_cy).atan2(px - a_bowl_cx);
-    let opening = px > a_bowl_cx && angle.abs() < 0.50;
-    let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
+    // Wavy boundary: two harmonics give an organic, hand-drawn edge
+    let angle    = y.atan2(x);
+    let wavy     = size * 0.013
+        * ((angle * 3.1).sin() + 0.5 * (angle * 6.3 + 0.9).cos());
+    let d_wavy   = dist + wavy;
 
-    let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
-
-    smoothstep(sw + 0.7, sw - 0.7, d_k.min(d_a))
+    smoothstep(1.5, -1.5, d_wavy)
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
-
-fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len2 = dx * dx + dy * dy;
-    if len2 < 1e-6 {
-        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
-    }
-    let t = (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0);
-    ((px - x1 - t * dx).powi(2) + (py - y1 - t * dy).powi(2)).sqrt()
-}
 
 fn rrect_sdf(cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
     let qx = cx.abs() - hw + r;
