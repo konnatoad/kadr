@@ -7,6 +7,7 @@ pub struct LuaEditor {
     pub open: bool,
     pub code: String,
     pub error: Option<String>,
+    show_vars: bool,
 }
 
 pub enum LuaEditorAction {
@@ -39,7 +40,7 @@ end
 
 impl Default for LuaEditor {
     fn default() -> Self {
-        Self { open: false, code: String::new(), error: None }
+        Self { open: false, code: String::new(), error: None, show_vars: false }
     }
 }
 
@@ -62,7 +63,7 @@ impl LuaEditor {
             .open(&mut still_open)
             .resizable(true)
             .collapsible(false)
-            .min_size([500.0, 400.0])
+            .min_size([480.0, 160.0])
             .default_size([640.0, 500.0])
             .show(ctx, |ui| {
                 // ── Header bar ──────────────────────────────────────────
@@ -83,12 +84,46 @@ impl LuaEditor {
                             self.code = EXAMPLE_SCRIPT.to_owned();
                             self.error = None;
                         }
+                        ui.add_space(6.0);
+                        let vars_label = if self.show_vars { "▲ Variables" } else { "▼ Variables" };
+                        if ui.add(
+                            egui::Button::new(RichText::new(vars_label).size(12.0).color(Color32::from_gray(200)))
+                                .fill(Color32::from_rgba_premultiplied(255, 255, 255, 12))
+                                .stroke(Stroke::new(1.0, Color32::from_gray(55))),
+                        ).clicked() {
+                            self.show_vars = !self.show_vars;
+                        }
                     });
                 });
 
                 ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
+
+                // ── Variable reference panel ─────────────────────────────
+                if self.show_vars {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_premultiplied(18, 18, 26, 255))
+                        .stroke(Stroke::new(1.0, Color32::from_gray(38)))
+                        .inner_margin(egui::Margin::symmetric(10i8, 8i8))
+                        .show(ui, |ui| {
+                            ui.columns(2, |cols| {
+                                let ui = &mut cols[0];
+                                ui.label(RichText::new("ctx.*  (inputs)").size(11.0).color(Color32::from_gray(100)));
+                                ui.add_space(3.0);
+                                for (name, typ, desc) in CTX_FIELDS {
+                                    var_row(ui, name, typ, desc);
+                                }
+                                let ui = &mut cols[1];
+                                ui.label(RichText::new("return { … }  (outputs)").size(11.0).color(Color32::from_gray(100)));
+                                ui.add_space(3.0);
+                                for (name, typ, desc) in RETURN_FIELDS {
+                                    var_row(ui, name, typ, desc);
+                                }
+                            });
+                        });
+                    ui.add_space(6.0);
+                }
 
                 // ── Error banner ────────────────────────────────────────
                 if let Some(err) = &self.error {
@@ -102,7 +137,9 @@ impl LuaEditor {
                 }
 
                 // ── Code editor ─────────────────────────────────────────
-                let available_h = ui.available_height() - 44.0; // reserve footer
+                // Reserve space for footer; clamp to at least 60px so the
+                // editor stays usable even when the window is dragged very small.
+                let available_h = (ui.available_height() - 44.0).max(60.0);
                 let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                     let mut job = lua_highlight(buf.as_str());
                     job.wrap.max_width = wrap_width;
@@ -111,13 +148,14 @@ impl LuaEditor {
 
                 egui::ScrollArea::vertical()
                     .id_salt("lua_ed_scroll")
+                    .min_scrolled_height(available_h)
                     .max_height(available_h)
                     .show(ui, |ui| {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.code)
                                 .font(egui::TextStyle::Monospace)
                                 .desired_width(f32::INFINITY)
-                                .desired_rows(24)
+                                .desired_rows(4)
                                 .layouter(&mut layouter),
                         );
                     });
@@ -159,6 +197,32 @@ impl LuaEditor {
 
         action
     }
+}
+
+// ── Variable reference data ──────────────────────────────────────────────────
+
+static CTX_FIELDS: &[(&str, &str, &str)] = &[
+    ("elapsed_secs",  "number",  "seconds elapsed since slide started"),
+    ("interval_secs", "number",  "total display time for this slide"),
+    ("current_index", "integer", "0-based index of the current image"),
+    ("total",         "integer", "total number of images in the folder"),
+];
+
+static RETURN_FIELDS: &[(&str, &str, &str)] = &[
+    ("zoom_target",  "number",  "zoom multiplier — 1.0 = fit, 1.4 = 40% larger"),
+    ("pan_x",        "number",  "horizontal pan, fraction of viewport width"),
+    ("pan_y",        "number",  "vertical pan, fraction of viewport height"),
+    ("opacity",      "number",  "image opacity — 0.0 transparent, 1.0 opaque"),
+    ("next_index",   "integer", "jump to this image index on next advance"),
+    ("new_interval", "number",  "change the slide interval (seconds)"),
+];
+
+fn var_row(ui: &mut egui::Ui, name: &str, typ: &str, desc: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(name).monospace().size(12.0).color(Color32::from_rgb(130, 185, 255)));
+        ui.label(RichText::new(typ).size(11.0).color(Color32::from_gray(80)));
+        ui.label(RichText::new(desc).size(11.0).color(Color32::from_gray(130)));
+    });
 }
 
 // ── Syntax highlighting ──────────────────────────────────────────────────────

@@ -41,6 +41,8 @@ pub struct KadrApp {
     loading: Arc<Mutex<Option<LoadResult>>>,
     status_msg: Option<(String, std::time::Instant)>,
     video_player: Option<VideoPlayer>,
+    #[cfg(windows)]
+    monitor_snap: Option<(i32, i32, u32, u32)>,
 }
 
 struct LoadResult {
@@ -85,6 +87,14 @@ impl KadrApp {
             loading: Arc::new(Mutex::new(None)),
             status_msg: None,
             video_player: None,
+            #[cfg(windows)]
+            monitor_snap: if config.preferred_monitor > 0 {
+                crate::monitor::enumerate()
+                    .get(config.preferred_monitor - 1)
+                    .map(|m| (m.x, m.y, m.width, m.height))
+            } else {
+                None
+            },
         };
 
         let restore = if config.remember_last_folder { config.last_path.clone() } else { None };
@@ -429,6 +439,26 @@ impl eframe::App for KadrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // ── First-frame monitor snap (Windows only) ──────────────────────────
+        // with_position() is overridden by Windows "Remember window locations",
+        // so we forcibly move the window in the first frame via SetWindowPos.
+        #[cfg(windows)]
+        if let Some((mx, my, mw, mh)) = self.monitor_snap.take() {
+            use winapi::um::winuser::{FindWindowW, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+            unsafe {
+                let title: Vec<u16> = "kadr\0".encode_utf16().collect();
+                let hwnd = FindWindowW(std::ptr::null_mut(), title.as_ptr());
+                if !hwnd.is_null() {
+                    let win_w = 1280i32;
+                    let win_h = 800i32;
+                    let x = mx + ((mw as i32 - win_w) / 2).max(0);
+                    let y = my + ((mh as i32 - win_h) / 2).max(0);
+                    SetWindowPos(hwnd, std::ptr::null_mut(), x, y, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+            }
+        }
+
         // Poll async image load — guard dropped before mutable calls
         let load_result = self.loading.lock().unwrap().take();
         if let Some(result) = load_result {
@@ -449,27 +479,53 @@ impl eframe::App for KadrApp {
         // Slideshow tick
         if self.slideshow.tick() {
             self.navigate(1);
+            // on_advance: called once each time the slide advances
+            if !self.entries.is_empty() {
+                let slide_ctx = SlideContext {
+                    current_index: self.current_index,
+                    total: self.entries.len(),
+                    interval_secs: self.slideshow.interval_secs(),
+                    elapsed_secs:  self.slideshow.elapsed_secs(),
+                };
+                let cmd = self.lua_script.as_ref()
+                    .and_then(|lua| lua.on_advance(&slide_ctx).ok());
+                if let Some(cmd) = cmd {
+                    let viewport = ctx.viewport_rect().size();
+                    if let Some(v) = cmd.zoom_target {
+                        if let Some(tex) = &self.current_texture {
+                            let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                            self.viewer_state.apply_lua_zoom(v, sz, viewport);
+                        }
+                    }
+                    if let Some(v) = cmd.pan_x    { self.viewer_state.lua_pan.x  = v; }
+                    if let Some(v) = cmd.pan_y    { self.viewer_state.lua_pan.y  = v; }
+                    if let Some(v) = cmd.opacity  { self.viewer_state.lua_opacity = v; }
+                }
+            }
             ctx.request_repaint();
         }
         if self.slideshow.active {
-            // Call Lua on_interval and apply zoom_target if provided
+            // on_interval: called ~10× per second while a slide is shown
             if !self.entries.is_empty() {
-                if let Some(lua) = &self.lua_script {
-                    let slide_ctx = SlideContext {
-                        current_index: self.current_index,
-                        total: self.entries.len(),
-                        interval_secs: self.slideshow.interval_secs(),
-                        elapsed_secs:  self.slideshow.elapsed_secs(),
-                    };
-                    if let Ok(cmd) = lua.on_interval(&slide_ctx) {
-                        if let Some(zoom_target) = cmd.zoom_target {
-                            if let Some(tex) = &self.current_texture {
-                                let image_size = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                                let viewport = ctx.viewport_rect().size();
-                                self.viewer_state.apply_lua_zoom(zoom_target, image_size, viewport);
-                            }
+                let slide_ctx = SlideContext {
+                    current_index: self.current_index,
+                    total: self.entries.len(),
+                    interval_secs: self.slideshow.interval_secs(),
+                    elapsed_secs:  self.slideshow.elapsed_secs(),
+                };
+                let cmd = self.lua_script.as_ref()
+                    .and_then(|lua| lua.on_interval(&slide_ctx).ok());
+                if let Some(cmd) = cmd {
+                    let viewport = ctx.viewport_rect().size();
+                    if let Some(v) = cmd.zoom_target {
+                        if let Some(tex) = &self.current_texture {
+                            let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                            self.viewer_state.apply_lua_zoom(v, sz, viewport);
                         }
                     }
+                    if let Some(v) = cmd.pan_x    { self.viewer_state.lua_pan.x  = v; }
+                    if let Some(v) = cmd.pan_y    { self.viewer_state.lua_pan.y  = v; }
+                    if let Some(v) = cmd.opacity  { self.viewer_state.lua_opacity = v; }
                 }
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

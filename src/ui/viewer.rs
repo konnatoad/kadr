@@ -5,6 +5,8 @@ pub struct ViewerState {
     pub offset: Vec2,
     pub fit_mode: bool,
     drag_start: Option<(Pos2, Vec2)>,
+    pub lua_pan: Vec2,
+    pub lua_opacity: f32,
 }
 
 impl Default for ViewerState {
@@ -14,6 +16,8 @@ impl Default for ViewerState {
             offset: Vec2::ZERO,
             fit_mode: true,
             drag_start: None,
+            lua_pan: Vec2::ZERO,
+            lua_opacity: 1.0,
         }
     }
 }
@@ -23,6 +27,8 @@ impl ViewerState {
         self.zoom = 1.0;
         self.offset = Vec2::ZERO;
         self.fit_mode = true;
+        self.lua_pan = Vec2::ZERO;
+        self.lua_opacity = 1.0;
     }
 
     pub fn toggle_zoom(&mut self, image_size: Vec2, viewport: Vec2) {
@@ -103,15 +109,13 @@ pub fn show_viewer(
     }
 
     let scaled = image_size * state.zoom;
-    let center = rect.center() + state.offset;
+    let lua_pixel_offset = Vec2::new(state.lua_pan.x * available.x, state.lua_pan.y * available.y);
+    let center = rect.center() + state.offset + lua_pixel_offset;
     let img_rect = Rect::from_center_size(center, scaled);
 
-    ui.painter().image(
-        texture.id(),
-        img_rect,
-        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
+    let alpha = (state.lua_opacity.clamp(0.0, 1.0) * 255.0) as u8;
+    let uv_rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    ui.painter().image(texture.id(), img_rect, uv_rect, Color32::from_white_alpha(alpha));
 
     let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
     if interact.hovered() && scroll_delta != 0.0 {
