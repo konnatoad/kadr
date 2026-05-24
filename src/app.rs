@@ -21,6 +21,7 @@ use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
 use crate::ui::toolbar::show_toolbar;
 use crate::ui::viewer::{show_viewer, ViewerState};
+use crate::video::VideoPlayer;
 
 const THUMB_CACHE_LIMIT: usize = 200;
 
@@ -39,6 +40,7 @@ pub struct KadrApp {
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
     status_msg: Option<(String, std::time::Instant)>,
+    video_player: Option<VideoPlayer>,
 }
 
 struct LoadResult {
@@ -48,8 +50,7 @@ struct LoadResult {
 }
 
 impl KadrApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, open_path: Option<PathBuf>) -> Self {
-        let config = AppConfig::load();
+    pub fn new(cc: &eframe::CreationContext<'_>, open_path: Option<PathBuf>, config: AppConfig) -> Self {
 
         apply_theme(&cc.egui_ctx);
 
@@ -71,6 +72,7 @@ impl KadrApp {
                 filter_videos:        config.filter_videos,
                 sort_mode:            config.viewer.sort_mode.clone(),
                 remember_last_folder: config.remember_last_folder,
+                preferred_monitor:    config.preferred_monitor,
                 bg_color:             config.viewer.background_color,
                 thumb_size:           config.thumbnail_size,
                 slideshow_interval:   config.slideshow.interval_secs,
@@ -82,6 +84,7 @@ impl KadrApp {
             lua_editor: LuaEditor::default(),
             loading: Arc::new(Mutex::new(None)),
             status_msg: None,
+            video_player: None,
         };
 
         let restore = if config.remember_last_folder { config.last_path.clone() } else { None };
@@ -119,6 +122,7 @@ impl KadrApp {
         self.thumb_textures.clear();
         self.current_texture = None;
         self.viewer_state.reset();
+        self.video_player = None;
 
         let folder = if path.is_file() {
             path.parent().unwrap_or(&path).to_path_buf()
@@ -146,6 +150,7 @@ impl KadrApp {
         self.current_index = index;
         self.current_texture = None;
         self.viewer_state.reset();
+        self.video_player = None;
         self.load_current_image();
     }
 
@@ -155,6 +160,11 @@ impl KadrApp {
         }
         let entry = &self.entries[self.current_index];
         if entry.media_type == MediaType::Video {
+            let path = entry.path.clone();
+            self.video_player = VideoPlayer::open(&path);
+            if let Some(ref mut vp) = self.video_player {
+                vp.play();
+            }
             return;
         }
 
@@ -228,6 +238,53 @@ impl KadrApp {
     }
 
     fn handle_keyboard(&mut self, ctx: &egui::Context) {
+        // When on a video, arrow keys + space control playback instead of image navigation.
+        let is_video = !self.entries.is_empty()
+            && self.entries[self.current_index].media_type == MediaType::Video;
+
+        if is_video {
+            let mut space = false;
+            let mut left = false;
+            let mut right = false;
+            let mut up = false;
+            let mut down = false;
+            let mut pgdn = false;
+            let mut pgup = false;
+            let mut do_fullscreen = false;
+            let mut do_quit = false;
+
+            ctx.input(|i| {
+                space = i.key_pressed(egui::Key::Space);
+                left = i.key_pressed(egui::Key::ArrowLeft);
+                right = i.key_pressed(egui::Key::ArrowRight);
+                up = i.key_pressed(egui::Key::ArrowUp);
+                down = i.key_pressed(egui::Key::ArrowDown);
+                pgdn = i.key_pressed(egui::Key::PageDown);
+                pgup = i.key_pressed(egui::Key::PageUp);
+                do_fullscreen = i.key_pressed(egui::Key::F11);
+                do_quit = i.modifiers.ctrl && i.key_pressed(egui::Key::Q);
+            });
+
+            if let Some(ref mut vp) = self.video_player {
+                if space { vp.toggle(); }
+                if left  { vp.seek(-10_000); }
+                if right { vp.seek(10_000); }
+                if up    { vp.change_volume(100); }
+                if down  { vp.change_volume(-100); }
+            }
+            if pgdn { self.navigate(1); }
+            if pgup { self.navigate(-1); }
+            if do_fullscreen {
+                self.fullscreen = !self.fullscreen;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            }
+            if do_quit {
+                let _ = self.config.save();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            return;
+        }
+
         let image_size = self.current_texture.as_ref()
             .map(|t| Vec2::new(t.size()[0] as f32, t.size()[1] as f32))
             .unwrap_or(Vec2::splat(1.0));
@@ -544,18 +601,113 @@ impl eframe::App for KadrApp {
 
                 let is_video = self.entries[self.current_index].media_type == MediaType::Video;
                 if is_video {
-                    let file_name = self.entries[self.current_index].file_name.clone();
-                    let path = self.entries[self.current_index].path.clone();
-                    ui.centered_and_justified(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!("▶  {file_name}"))
-                                .color(Color32::from_gray(180))
-                                .size(20.0),
-                        );
-                        if ui.button("Open in system player").clicked() {
-                            let _ = open::that(&path);
+                    // Poll end-of-file
+                    if let Some(ref mut vp) = self.video_player {
+                        if vp.playing && vp.is_at_end() {
+                            vp.playing = false;
                         }
+                    }
+
+                    let file_name = self.entries[self.current_index].file_name.clone();
+                    let dur   = self.video_player.as_ref().map(|v| v.duration_ms).unwrap_or(0);
+                    let pos   = self.video_player.as_ref().map(|v| v.position_ms()).unwrap_or(0);
+                    let playing  = self.video_player.as_ref().map(|v| v.playing).unwrap_or(false);
+                    let volume   = self.video_player.as_ref().map(|v| v.volume).unwrap_or(800);
+                    let has_player = self.video_player.is_some();
+
+                    if playing {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                    }
+
+                    let avail_h = ui.available_height();
+                    ui.add_space(((avail_h - 290.0) * 0.5).max(8.0));
+
+                    ui.vertical_centered(|ui| {
+                        draw_film_icon(ui);
+                        ui.add_space(14.0);
+                        ui.label(
+                            egui::RichText::new(&file_name)
+                                .size(17.0)
+                                .color(Color32::from_gray(200)),
+                        );
+
+                        if has_player {
+                            ui.add_space(20.0);
+
+                            // Progress bar (clickable)
+                            let bar_w = 380.0_f32;
+                            let bar_h = 6.0_f32;
+                            let (bar_rect, bar_resp) = ui.allocate_exact_size(
+                                egui::vec2(bar_w, bar_h),
+                                egui::Sense::click(),
+                            );
+                            let frac = if dur > 0 { (pos as f32 / dur as f32).clamp(0.0, 1.0) } else { 0.0 };
+                            ui.painter().rect_filled(bar_rect, 3.0, Color32::from_rgb(28, 28, 36));
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_size(
+                                    bar_rect.min,
+                                    egui::vec2(bar_rect.width() * frac, bar_h),
+                                ),
+                                3.0,
+                                Color32::from_rgb(99, 155, 255),
+                            );
+
+                            if bar_resp.clicked() {
+                                if let Some(click) = bar_resp.interact_pointer_pos() {
+                                    let t = ((click.x - bar_rect.min.x) / bar_rect.width()).clamp(0.0, 1.0);
+                                    let target = (t * dur as f32) as i64;
+                                    if let Some(ref mut vp) = self.video_player {
+                                        vp.seek(target - pos as i64);
+                                    }
+                                }
+                            }
+
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}  /  {}",
+                                    fmt_duration(pos),
+                                    fmt_duration(dur)
+                                ))
+                                .size(12.0)
+                                .color(Color32::from_gray(110))
+                                .monospace(),
+                            );
+
+                            ui.add_space(10.0);
+                            let state_label = if playing { "|  Playing" } else { ">  Paused" };
+                            ui.label(
+                                egui::RichText::new(state_label)
+                                    .size(13.0)
+                                    .color(Color32::from_gray(155)),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("Vol  {}", volume / 10))
+                                    .size(11.0)
+                                    .color(Color32::from_gray(90))
+                                    .monospace(),
+                            );
+                        } else {
+                            ui.add_space(18.0);
+                            ui.label(
+                                egui::RichText::new("Format not supported — cannot play in-app")
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(200, 90, 80)),
+                            );
+                        }
+
+                        ui.add_space(28.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Space  play/pause     Left/Right  seek 10 s     Up/Down  volume     PageUp/Down  prev/next file",
+                            )
+                            .size(10.5)
+                            .color(Color32::from_gray(58))
+                            .monospace(),
+                        );
                     });
+
                     return;
                 }
 
@@ -702,6 +854,7 @@ impl eframe::App for KadrApp {
                 self.config.filter_videos              = self.settings_dialog.filter_videos;
                 self.config.viewer.sort_mode           = self.settings_dialog.sort_mode.clone();
                 self.config.remember_last_folder       = self.settings_dialog.remember_last_folder;
+                self.config.preferred_monitor          = self.settings_dialog.preferred_monitor;
                 self.config.viewer.background_color    = self.settings_dialog.bg_color;
                 self.config.thumbnail_size             = self.settings_dialog.thumb_size;
                 self.config.slideshow.interval_secs    = self.settings_dialog.slideshow_interval;
@@ -839,6 +992,51 @@ fn apply_theme(ctx: &egui::Context) {
         egui::FontId::new(11.0, egui::FontFamily::Proportional),
     );
     ctx.set_global_style(style);
+}
+
+fn fmt_duration(ms: u64) -> String {
+    let s = ms / 1000;
+    let m = s / 60;
+    let s = s % 60;
+    format!("{m}:{s:02}")
+}
+
+fn draw_film_icon(ui: &mut egui::Ui) {
+    let size = 52.0_f32;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let p = ui.painter();
+    let c = rect.center();
+
+    let body_color = egui::Color32::from_gray(72);
+    let hole_color = egui::Color32::from_gray(28);
+    let play_color = egui::Color32::from_gray(160);
+
+    // Main strip
+    let body = egui::Rect::from_center_size(c, egui::vec2(size * 0.84, size * 0.64));
+    p.rect_filled(body, 3.0, body_color);
+
+    // Perforations top/bottom
+    let hole_r = size * 0.056;
+    for row in [c.y - size * 0.27, c.y + size * 0.27] {
+        for col in [-2i32, -1, 0, 1, 2] {
+            p.circle_filled(
+                egui::pos2(c.x + col as f32 * size * 0.155, row),
+                hole_r,
+                hole_color,
+            );
+        }
+    }
+
+    // Play triangle
+    let h = size * 0.22;
+    let p1 = egui::pos2(c.x - h * 0.5, c.y - h);
+    let p2 = egui::pos2(c.x - h * 0.5, c.y + h);
+    let p3 = egui::pos2(c.x + h, c.y);
+    p.add(egui::Shape::convex_polygon(
+        vec![p1, p2, p3],
+        play_color,
+        egui::Stroke::NONE,
+    ));
 }
 
 fn make_thumbnail(img: &ColorImage, max_size: usize) -> ColorImage {
