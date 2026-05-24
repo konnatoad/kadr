@@ -39,6 +39,12 @@ pub struct KadrApp {
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
+    /// Background slot for the *next* image — filled as soon as the current one loads.
+    preload_loading: Arc<Mutex<Option<LoadResult>>>,
+    /// Ready-to-use preloaded texture (promoted from preload_loading).
+    preload_texture: Option<TextureHandle>,
+    /// Which index is sitting in the preload slot (in-flight or ready).
+    preload_index: Option<usize>,
     status_msg: Option<(String, std::time::Instant)>,
     video_player: Option<VideoPlayer>,
     /// The outgoing image, kept alive during a crossfade.
@@ -99,6 +105,9 @@ impl KadrApp {
             },
             lua_editor: LuaEditor::default(),
             loading: Arc::new(Mutex::new(None)),
+            preload_loading: Arc::new(Mutex::new(None)),
+            preload_texture: None,
+            preload_index: None,
             status_msg: None,
             video_player: None,
             prev_texture: None,
@@ -183,7 +192,30 @@ impl KadrApp {
         // Cancel any in-progress crossfade — manual navigation is always instant.
         self.prev_texture = None;
         self.transition_t = 1.0;
+        // Discard any preload state — it's for the wrong index now.
+        self.preload_texture = None;
+        self.preload_index = None;
         self.load_current_image();
+    }
+
+    /// Kick off a background load of `index` into the preload slot.
+    fn start_preload(&mut self, index: usize) {
+        if index >= self.entries.len() { return; }
+        if self.entries[index].media_type == MediaType::Video { return; }
+        let path = self.entries[index].path.clone();
+        let slot = Arc::clone(&self.preload_loading);
+        *slot.lock().unwrap() = None;
+        self.preload_texture = None;
+        self.preload_index = Some(index);
+        thread::spawn(move || {
+            if let Ok(img) = LoadedImage::load(&path) {
+                *slot.lock().unwrap() = Some(LoadResult {
+                    index,
+                    image: Some(img.to_egui_image()),
+                    error: None,
+                });
+            }
+        });
     }
 
     fn load_current_image(&mut self) {
@@ -502,8 +534,28 @@ impl eframe::App for KadrApp {
                         egui::TextureOptions::LINEAR,
                     );
                     self.current_texture = Some(tex);
+                    // Immediately start preloading the next image.
+                    if self.slideshow.active && !self.entries.is_empty() {
+                        let next = (self.current_index + 1) % self.entries.len();
+                        self.start_preload(next);
+                    }
                 } else if let Some(err) = result.error {
                     self.set_status(format!("Error: {err}"));
+                }
+            }
+        }
+
+        // Promote completed preload into a ready texture.
+        let preload_result = self.preload_loading.lock().unwrap().take();
+        if let Some(result) = preload_result {
+            if Some(result.index) == self.preload_index {
+                if let Some(color_img) = result.image {
+                    let tex = ctx.load_texture(
+                        "preload_image",
+                        color_img,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.preload_texture = Some(tex);
                 }
             }
         }
@@ -532,7 +584,20 @@ impl eframe::App for KadrApp {
                     self.current_index = next;
                     self.viewer_state.reset();
                     self.video_player = None;
-                    self.load_current_image();
+
+                    if self.preload_index == Some(next) {
+                        if let Some(tex) = self.preload_texture.take() {
+                            // Preload finished — use it immediately, no wait.
+                            self.current_texture = Some(tex);
+                        } else {
+                            // Preload still in flight — swap its slot to the main
+                            // slot so the arriving result is picked up normally.
+                            std::mem::swap(&mut self.loading, &mut self.preload_loading);
+                        }
+                        self.preload_index = None;
+                    } else {
+                        self.load_current_image();
+                    }
 
                     // on_advance: let Lua set initial zoom/pan for the incoming image.
                     let advance_cmd = self.lua_script.as_ref().and_then(|lua| {
