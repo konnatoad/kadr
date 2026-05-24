@@ -1,84 +1,100 @@
-/// Generates the kadr icon as RGBA bytes.
-/// Design: dark rounded square, white outline photo frame, sun + mountain silhouette inside.
-pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let s     = size as f32;
-    let half  = s / 2.0;
-
-    // Outer icon: generous rounding (approx iOS-style squircle feel)
-    let outer_r = s / 4.2;
-
-    // Photo frame rectangle
-    let margin  = s * 0.13;               // inset from icon edge to frame
-    let fhalf   = half - margin;          // frame outer half-size
-    let fb      = (s / 10.5).max(1.5);   // frame border thickness
-    let fi_half = fhalf - fb;             // content area half-size
-    let fr      = fhalf / 5.0;            // frame outer corner radius
-    let fi_r    = (fi_half / 5.5).max(0.5);
-
-    // Colors (RGBA)
-    let bg     = [12u8, 12, 16, 255];
-    let light  = [192u8, 196, 210, 255];
-    let transp = [0u8,   0,   0,   0];
-
-    let mnt_slope  = 1.30_f32;
-    let mnt_lift   = fi_half * 0.30;
-
-    let mut out = Vec::with_capacity((size * size * 4) as usize);
-
-    for py in 0..size {
-        for px in 0..size {
-            let x  = px as f32 + 0.5;
-            let y  = py as f32 + 0.5;
-            let cx = x - half;
-            let cy = y - half;
-            let ax = cx.abs();
-            let ay = cy.abs();
-
-            // Outer rounded-square boundary + AA
-            let outer_d = rrect_sdf(ax, ay, half - 0.5, outer_r);
-            if outer_d > 0.8 {
-                out.extend_from_slice(&transp);
-                continue;
-            }
-            let aa = ((0.8 - outer_d.max(0.0)) / 0.8 * 255.0).clamp(0.0, 255.0) as u8;
-
-            // Frame ring
-            let d_out = rrect_sdf(ax, ay, fhalf,   fr);
-            let d_in  = rrect_sdf(ax, ay, fi_half, fi_r);
-            let on_frame   = d_out <= 0.6 && d_in > -0.6;
-            let in_content = d_in <= -0.6;
-
-            // Sun: filled circle, upper-right of content
-            let sun_r  = fi_half * 0.21;
-            let sun_ox = fi_half * 0.40;
-            let sun_oy = -(fi_half * 0.40);
-            let sun_d  = ((cx - sun_ox).powi(2) + (cy - sun_oy).powi(2)).sqrt();
-            let on_sun = in_content && sun_d <= sun_r + 0.6;
-
-            // Mountain: isoceles triangle, peak ~30% above centre
-            // on_mnt = cy > |cx| * slope - lift  (region below the V-line)
-            let on_mnt = in_content && !on_sun
-                && cy > cx.abs() * mnt_slope - mnt_lift;
-
-            let pixel = if on_frame || on_sun || on_mnt { light } else { bg };
-
-            let a = ((pixel[3] as u32 * aa as u32) / 255) as u8;
-            out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], a]);
-        }
-    }
-
-    out
-}
-
 pub fn egui_icon() -> egui::IconData {
-    let size = 64u32;
+    let size = 48u32;
     let rgba = icon_rgba(size);
     egui::IconData { rgba, width: size, height: size }
 }
 
-/// Returns positive when outside, negative when inside.
-fn rrect_sdf(ax: f32, ay: f32, half: f32, r: f32) -> f32 {
-    let qx = (ax - (half - r)).max(0.0);
-    let qy = (ay - (half - r)).max(0.0);
-    (qx * qx + qy * qy).sqrt() - r
+pub fn icon_rgba(size: u32) -> Vec<u8> {
+    let fi = size as f32;
+    let half = fi / 2.0;
+    let mut out = vec![0u8; (size * size * 4) as usize];
+
+    for py in 0..size {
+        for px in 0..size {
+            let fx = px as f32 + 0.5;
+            let fy = py as f32 + 0.5;
+            let cx = fx - half;
+            let cy = fy - half;
+
+            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.22);
+            let bg_a = smoothstep(0.6, -0.6, bg_d);
+            if bg_a < 0.005 { continue; }
+
+            let la = ka_alpha(fx, fy, fi);
+            let r = lerp(12.0, 220.0, la) as u8;
+            let g = lerp(12.0, 220.0, la) as u8;
+            let b = lerp(16.0, 222.0, la) as u8;
+            let a = (bg_a * 255.0) as u8;
+
+            let idx = ((py * size + px) * 4) as usize;
+            out[idx]     = r;
+            out[idx + 1] = g;
+            out[idx + 2] = b;
+            out[idx + 3] = a;
+        }
+    }
+    out
 }
+
+// ── "ka" letterforms ──────────────────────────────────────────────────────────
+
+fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
+    let sw  = size * 0.090; // stroke radius
+    let pad = size * 0.155;
+    let h   = size - 2.0 * pad;
+
+    // ── k ────────────────────────────────────────────────────────────────────
+    let k_stem_x = pad + sw * 0.9;
+    let k_arm_x  = pad + size * 0.305;
+    let k_top    = pad;
+    let k_bot    = size - pad;
+    let k_mid    = pad + h * 0.50;
+
+    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)
+        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))
+        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));
+
+    // ── a ────────────────────────────────────────────────────────────────────
+    let a_ox      = pad + size * 0.405;
+    let a_bowl_cx = a_ox + size * 0.145;
+    let a_bowl_cy = pad + h * 0.50;
+    let a_bowl_r  = h * 0.302;
+    let a_stem_x  = a_ox + size * 0.287;
+    let a_stem_top = pad + h * 0.18;
+
+    let dist_c = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
+    let angle  = (py - a_bowl_cy).atan2(px - a_bowl_cx);
+    let opening = px > a_bowl_cx && angle.abs() < 0.52;
+    let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
+
+    let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
+
+    let d = d_k.min(d_a);
+    smoothstep(sw + 0.6, sw - 0.6, d)
+}
+
+// ── Math helpers ──────────────────────────────────────────────────────────────
+
+fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 1e-6 {
+        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+    let t = (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0);
+    ((px - x1 - t * dx).powi(2) + (py - y1 - t * dy).powi(2)).sqrt()
+}
+
+fn rrect_sdf(cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
+    let qx = cx.abs() - hw + r;
+    let qy = cy.abs() - hh + r;
+    qx.max(0.0).hypot(qy.max(0.0)) + qx.min(0.0).max(qy.min(0.0)) - r
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge1) / (edge0 - edge1)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
