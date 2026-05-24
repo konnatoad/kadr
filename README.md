@@ -1,6 +1,6 @@
 # kadr
 
-Fast, minimal image and video viewer for Windows built with Rust and egui.
+Fast, minimal image and video viewer built with Rust and egui.
 
 ## Features
 
