@@ -93,12 +93,25 @@ impl ViewerState {
     }
 }
 
+// ── Crossfade transition data ────────────────────────────────────────────────
+
+/// Pass this to [`show_viewer`] while a crossfade is active.
+/// `t` = 0.0 → fully previous image; `t` = 1.0 → fully current image.
+pub struct TransitionData<'a> {
+    pub prev_texture: &'a TextureHandle,
+    pub prev_size:    Vec2,
+    pub t:            f32,
+}
+
+// ── Viewer ───────────────────────────────────────────────────────────────────
+
 pub fn show_viewer(
     ui: &mut Ui,
     texture: &TextureHandle,
     state: &mut ViewerState,
     image_size: Vec2,
     bg_color: Color32,
+    transition: Option<TransitionData<'_>>,
 ) -> ViewerResponse {
     let mut response = ViewerResponse::default();
     let available = ui.available_size();
@@ -117,14 +130,32 @@ pub fn show_viewer(
     );
     let center = rect.center() + state.offset + lua_pixel_offset;
     let img_rect = Rect::from_center_size(center, scaled);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
 
-    let alpha = (state.lua_opacity.clamp(0.0, 1.0) * 255.0) as u8;
-    ui.painter().image(
-        texture.id(),
-        img_rect,
-        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-        Color32::from_white_alpha(alpha),
-    );
+    // ── Outgoing image (drawn beneath, fades out) ────────────────────────────
+    if let Some(ref tr) = transition {
+        if tr.t < 1.0 && tr.prev_size.x > 0.0 && tr.prev_size.y > 0.0 {
+            let prev_alpha = ((1.0 - tr.t) * 255.0) as u8;
+            let fit_scale = (available.x / tr.prev_size.x)
+                .min(available.y / tr.prev_size.y)
+                .min(1.0);
+            let prev_rect = Rect::from_center_size(rect.center(), tr.prev_size * fit_scale);
+            ui.painter().image(
+                tr.prev_texture.id(),
+                prev_rect,
+                uv,
+                Color32::from_white_alpha(prev_alpha),
+            );
+        }
+    }
+
+    // ── Current image (fades in, also respects lua_opacity) ──────────────────
+    let transition_t = match &transition {
+        Some(tr) => tr.t.clamp(0.0, 1.0),
+        None     => 1.0,
+    };
+    let alpha = (state.lua_opacity.clamp(0.0, 1.0) * transition_t * 255.0) as u8;
+    ui.painter().image(texture.id(), img_rect, uv, Color32::from_white_alpha(alpha));
 
     let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
     if interact.hovered() && scroll_delta != 0.0 {

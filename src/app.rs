@@ -12,7 +12,7 @@ use crate::fs::sorter::sort_entries;
 use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
 use crate::media::loader::{apply_flip_horizontal, apply_flip_vertical, apply_rotation, save_image, LoadedImage};
-use crate::slideshow::engine::SlideshowEngine;
+use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
 use crate::slideshow::lua_script::SlideContext;
 use crate::ui::combine_dialog::{CombineAction, CombineDialog};
@@ -20,7 +20,7 @@ use crate::ui::lua_editor::{LuaEditor, LuaEditorAction};
 use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
 use crate::ui::toolbar::show_toolbar;
-use crate::ui::viewer::{show_viewer, ViewerState};
+use crate::ui::viewer::{show_viewer, TransitionData, ViewerState};
 use crate::video::VideoPlayer;
 
 const THUMB_CACHE_LIMIT: usize = 200;
@@ -41,6 +41,12 @@ pub struct KadrApp {
     loading: Arc<Mutex<Option<LoadResult>>>,
     status_msg: Option<(String, std::time::Instant)>,
     video_player: Option<VideoPlayer>,
+    /// The outgoing image, kept alive during a crossfade.
+    prev_texture: Option<TextureHandle>,
+    /// Pixel dimensions of `prev_texture`.
+    prev_image_size: Vec2,
+    /// Crossfade progress: 0.0 = fully prev, 1.0 = fully current.
+    transition_t: f32,
     // Physical monitor rect to snap the window to on the first frame.
     // Using SetWindowPos (physical px) is more reliable than with_position()
     // which can be overridden by Windows' "remember window locations" feature.
@@ -81,6 +87,7 @@ impl KadrApp {
                 bg_color:             config.viewer.background_color,
                 thumb_size:           config.thumbnail_size,
                 slideshow_interval:   config.slideshow.interval_secs,
+                slideshow_transition: config.slideshow.transition_secs,
                 slideshow_loop:       config.slideshow.loop_mode,
                 slideshow_random:     config.slideshow.random_order,
                 lua_code:             config.slideshow.lua_script.clone(),
@@ -90,6 +97,9 @@ impl KadrApp {
             loading: Arc::new(Mutex::new(None)),
             status_msg: None,
             video_player: None,
+            prev_texture: None,
+            prev_image_size: Vec2::ZERO,
+            transition_t: 1.0,
             #[cfg(windows)]
             monitor_snap: if config.preferred_monitor > 0 {
                 crate::monitor::enumerate()
@@ -164,6 +174,9 @@ impl KadrApp {
         self.current_texture = None;
         self.viewer_state.reset();
         self.video_player = None;
+        // Cancel any in-progress crossfade — manual navigation is always instant.
+        self.prev_texture = None;
+        self.transition_t = 1.0;
         self.load_current_image();
     }
 
@@ -489,48 +502,84 @@ impl eframe::App for KadrApp {
             }
         }
 
-        // Slideshow tick
-        if self.slideshow.tick() {
-            self.navigate(1);
-            // Call on_advance so scripts can set initial state (e.g. opacity = 0 for fade-in).
-            // viewer_state.reset() already ran inside navigate(), so Lua overrides the defaults.
-            if !self.entries.is_empty() {
-                if let Some(lua) = &self.lua_script {
-                    let slide_ctx = SlideContext {
-                        current_index: self.current_index,
-                        total: self.entries.len(),
-                        interval_secs: self.slideshow.interval_secs(),
-                        elapsed_secs: 0.0,
-                    };
-                    if let Ok(cmd) = lua.on_advance(&slide_ctx) {
-                        apply_lua_cmd(&mut self.viewer_state, &cmd);
-                    }
-                }
-            }
-            ctx.request_repaint();
-        }
-        if self.slideshow.active {
-            if !self.entries.is_empty() {
-                if let Some(lua) = &self.lua_script {
-                    let slide_ctx = SlideContext {
-                        current_index: self.current_index,
-                        total: self.entries.len(),
-                        interval_secs: self.slideshow.interval_secs(),
-                        elapsed_secs:  self.slideshow.elapsed_secs(),
-                    };
-                    if let Ok(cmd) = lua.on_interval(&slide_ctx) {
-                        if let Some(zoom_target) = cmd.zoom_target {
+        // ── Slideshow tick ───────────────────────────────────────────────────
+        match self.slideshow.tick() {
+            TickResult::Nothing => {}
+
+            TickResult::BeginTransition => {
+                // Capture the outgoing image before advancing the index.
+                self.prev_texture   = self.current_texture.take();
+                self.prev_image_size = self.prev_texture.as_ref()
+                    .map(|t| Vec2::new(t.size()[0] as f32, t.size()[1] as f32))
+                    .unwrap_or(Vec2::ZERO);
+                self.transition_t = 0.0;
+
+                // Advance to the next image.
+                if !self.entries.is_empty() {
+                    let len = self.entries.len() as i64;
+                    let next = ((self.current_index as i64 + 1).rem_euclid(len)) as usize;
+                    self.current_index = next;
+                    self.viewer_state.reset();
+                    self.video_player = None;
+                    self.load_current_image();
+
+                    // on_advance: let Lua set initial zoom/pan for the incoming image.
+                    let advance_cmd = self.lua_script.as_ref().and_then(|lua| {
+                        lua.on_advance(&SlideContext {
+                            current_index: self.current_index,
+                            total: self.entries.len(),
+                            interval_secs: self.slideshow.interval_secs(),
+                            elapsed_secs: 0.0,
+                        }).ok()
+                    });
+                    if let Some(cmd) = advance_cmd {
+                        let vp = ctx.viewport_rect().size();
+                        if let Some(v) = cmd.zoom_target {
                             if let Some(tex) = &self.current_texture {
-                                let image_size = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                                let viewport = ctx.viewport_rect().size();
-                                self.viewer_state.apply_lua_zoom(zoom_target, image_size, viewport);
+                                let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                                self.viewer_state.apply_lua_zoom(v, sz, vp);
                             }
                         }
                         apply_lua_cmd(&mut self.viewer_state, &cmd);
                     }
                 }
+                ctx.request_repaint();
             }
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+
+            TickResult::TransitionProgress(t) => {
+                // Hold at 0 visually if the new image hasn't finished loading yet.
+                self.transition_t = if self.current_texture.is_some() { t } else { 0.0 };
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+
+            TickResult::TransitionDone => {
+                self.prev_texture = None;
+                self.transition_t = 1.0;
+                ctx.request_repaint();
+            }
+        }
+
+        // on_interval: ~60 Hz Lua callbacks for zoom / pan animation.
+        if self.slideshow.active && !self.entries.is_empty() {
+            let interval_cmd = self.lua_script.as_ref().and_then(|lua| {
+                lua.on_interval(&SlideContext {
+                    current_index: self.current_index,
+                    total: self.entries.len(),
+                    interval_secs: self.slideshow.interval_secs(),
+                    elapsed_secs:  self.slideshow.elapsed_secs(),
+                }).ok()
+            });
+            if let Some(cmd) = interval_cmd {
+                let vp = ctx.viewport_rect().size();
+                if let Some(v) = cmd.zoom_target {
+                    if let Some(tex) = &self.current_texture {
+                        let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                        self.viewer_state.apply_lua_zoom(v, sz, vp);
+                    }
+                }
+                apply_lua_cmd(&mut self.viewer_state, &cmd);
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         // Keyboard
@@ -550,10 +599,19 @@ impl eframe::App for KadrApp {
 
         if self.fullscreen {
             ui.painter().rect_filled(ui.available_rect_before_wrap(), 0.0, bg);
-            if let Some(tex) = self.current_texture.clone() {
-                let size = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                show_viewer(ui, &tex, &mut self.viewer_state, size, bg);
-            }
+            let (tex, size) = if let Some(t) = self.current_texture.clone() {
+                let s = Vec2::new(t.size()[0] as f32, t.size()[1] as f32);
+                (t, s)
+            } else if let Some(t) = self.prev_texture.clone() {
+                (t, self.prev_image_size)
+            } else {
+                return;
+            };
+            let prev_clone = self.prev_texture.clone();
+            let transition = prev_clone.as_ref()
+                .filter(|_| self.current_texture.is_some())
+                .map(|p| TransitionData { prev_texture: p, prev_size: self.prev_image_size, t: self.transition_t });
+            show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
             return;
         }
 
@@ -691,9 +749,29 @@ impl eframe::App for KadrApp {
                     return;
                 }
 
-                if let Some(tex) = self.current_texture.clone() {
-                    let size = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                    show_viewer(ui, &tex, &mut self.viewer_state, size, bg);
+                // Determine what to display: current (possibly fading in), prev (held while
+                // current loads), or a spinner if nothing is available yet.
+                let (tex, size) = if let Some(t) = self.current_texture.clone() {
+                    let s = Vec2::new(t.size()[0] as f32, t.size()[1] as f32);
+                    (Some(t), s)
+                } else if let Some(t) = self.prev_texture.clone() {
+                    // New image still loading — keep showing prev at full opacity.
+                    (Some(t), self.prev_image_size)
+                } else {
+                    (None, Vec2::ZERO)
+                };
+
+                if let Some(tex) = tex {
+                    // Only render crossfade when both images are present.
+                    let prev_clone = self.prev_texture.clone();
+                    let transition = prev_clone.as_ref()
+                        .filter(|_| self.current_texture.is_some())
+                        .map(|p| TransitionData {
+                            prev_texture: p,
+                            prev_size: self.prev_image_size,
+                            t: self.transition_t,
+                        });
+                    show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
                 } else {
                     ui.centered_and_justified(|ui| { ui.spinner(); });
                 }
@@ -838,10 +916,12 @@ impl eframe::App for KadrApp {
                 self.config.viewer.background_color    = self.settings_dialog.bg_color;
                 self.config.thumbnail_size             = self.settings_dialog.thumb_size;
                 self.config.slideshow.interval_secs    = self.settings_dialog.slideshow_interval;
+                self.config.slideshow.transition_secs  = self.settings_dialog.slideshow_transition;
                 self.config.slideshow.loop_mode        = self.settings_dialog.slideshow_loop;
                 self.config.slideshow.random_order     = self.settings_dialog.slideshow_random;
                 self.config.slideshow.lua_script       = self.settings_dialog.lua_code.clone();
                 self.slideshow.update_interval(self.settings_dialog.slideshow_interval);
+                self.slideshow.transition_secs = self.settings_dialog.slideshow_transition;
 
                 if needs_rescan {
                     if let Some(folder) = self.config.last_path.clone() {
