@@ -115,7 +115,7 @@ impl LuaEditor {
 
                 // ── Variable reference panel ─────────────────────────────
                 if self.show_vars {
-                    egui::Frame::none()
+                    egui::Frame::new()
                         .fill(Color32::from_rgba_premultiplied(18, 18, 26, 255))
                         .stroke(Stroke::new(1.0, Color32::from_gray(40)))
                         .inner_margin(egui::Margin::symmetric(10i8, 8i8))
