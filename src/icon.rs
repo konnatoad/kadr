@@ -18,7 +18,7 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
 
             // Rounded-rect background — dark so letters pop.
             let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
-            let bg_a = smoothstep(0.7, -0.7, bg_d);
+            let bg_a = smoothstep(-0.7, 0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
             // Dark blue-black background, accent-blue letters.
@@ -74,7 +74,7 @@ fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
 
     let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
 
-    smoothstep(sw + 0.8, sw - 0.8, d_k.min(d_a))
+    smoothstep(sw - 0.8, sw + 0.8, d_k.min(d_a))
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────

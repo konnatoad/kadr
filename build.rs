@@ -13,7 +13,7 @@ fn main() {
 }
 
 fn generate_ico(path: &str) {
-    let sizes: &[u32] = &[16, 32, 48];
+    let sizes: &[u32] = &[16, 24, 32, 48, 64];
     let images: Vec<Vec<u8>> = sizes.iter().map(|&s| make_bmp_image(s)).collect();
 
     let header_size = 6u32 + sizes.len() as u32 * 16;
@@ -79,15 +79,15 @@ fn make_icon_pixels(size: u32) -> Vec<u8> {
             let cy = fy - half;
 
             let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
-            let bg_a = smoothstep(0.7, -0.7, bg_d);
+            let bg_a = smoothstep(-0.7, 0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
             let la = ka_alpha(fx, fy, fi);
 
-            // Blue bg (#63 9B FF) → white letters
-            let b = lerp(255.0, 255.0, la) as u8;
-            let g = lerp(155.0, 255.0, la) as u8;
-            let r = lerp(99.0,  255.0, la) as u8;
+            // Dark bg → accent-blue letters (BGRA order for BMP)
+            let b = lerp(18.0, 255.0, la) as u8;
+            let g = lerp(12.0, 155.0, la) as u8;
+            let r = lerp(12.0,  99.0, la) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((bmp_row * size + px) * 4) as usize;
@@ -129,7 +129,7 @@ fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
 
     let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
 
-    smoothstep(sw + 0.7, sw - 0.7, d_k.min(d_a))
+    smoothstep(sw - 0.7, sw + 0.7, d_k.min(d_a))
 }
 
 fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
