@@ -13,7 +13,7 @@ use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
 use crate::media::loader::{
     LoadedImage, apply_flip_horizontal, apply_flip_vertical, apply_rotation, save_image,
-    try_load_exif_thumbnail,
+    try_exif_thumbnail_from_bytes, load_jpeg_from_bytes,
 };
 use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
@@ -282,34 +282,69 @@ impl KadrApp {
         );
 
         thread::spawn(move || {
-            // Phase 1 — EXIF thumbnail (reads only the first ~256 KB of the
-            // file, so it arrives well before the full multi-megabyte decode).
             if is_jpeg {
-                if let Some(thumb) = try_load_exif_thumbnail(&path) {
+                // ── Single-pass JPEG load ─────────────────────────────────
+                // Open the file once and read it in two steps so the EXIF
+                // thumbnail can be emitted before the full 65+ MB is in RAM.
+                use std::io::Read;
+
+                let mut f = match std::fs::File::open(&path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        *result_slot.lock().unwrap() = Some(LoadResult {
+                            index, image: None, error: Some(e.to_string()),
+                        });
+                        ctx.request_repaint();
+                        return;
+                    }
+                };
+
+                // Phase 1 — read the first 256 KB and emit the EXIF thumbnail.
+                let mut header = Vec::with_capacity(256 * 1024);
+                let _ = f.by_ref().take(256 * 1024).read_to_end(&mut header);
+
+                if let Some(thumb) = try_exif_thumbnail_from_bytes(&header) {
                     *thumb_slot.lock().unwrap() = Some(LoadResult {
-                        index,
-                        image: Some(thumb),
-                        error: None,
+                        index, image: Some(thumb), error: None,
                     });
                     ctx.request_repaint();
                 }
-            }
 
-            // Phase 2 — full-resolution decode (replaces the thumbnail).
-            let result = match LoadedImage::load(&path) {
-                Ok(img) => LoadResult {
-                    index,
-                    image: Some((*img.to_egui_image()).clone()),
-                    error: None,
-                },
-                Err(e) => LoadResult {
-                    index,
-                    image: None,
-                    error: Some(e.to_string()),
-                },
-            };
-            *result_slot.lock().unwrap() = Some(result);
-            ctx.request_repaint();
+                // Phase 2 — read the rest, combine, decode from memory.
+                // No second file open: the OS page-cache already has the
+                // first 256 KB warm, so this is one sequential read total.
+                let mut tail = Vec::new();
+                let _ = f.read_to_end(&mut tail);
+                header.append(&mut tail);
+                let full_data = header;
+
+                let result = match load_jpeg_from_bytes(&full_data) {
+                    Ok(img) => LoadResult {
+                        index,
+                        image: Some((*img.to_egui_image()).clone()),
+                        error: None,
+                    },
+                    Err(e) => LoadResult {
+                        index, image: None, error: Some(e.to_string()),
+                    },
+                };
+                *result_slot.lock().unwrap() = Some(result);
+                ctx.request_repaint();
+            } else {
+                // ── Non-JPEG (PNG, RAW, …) — existing path ────────────────
+                let result = match LoadedImage::load(&path) {
+                    Ok(img) => LoadResult {
+                        index,
+                        image: Some((*img.to_egui_image()).clone()),
+                        error: None,
+                    },
+                    Err(e) => LoadResult {
+                        index, image: None, error: Some(e.to_string()),
+                    },
+                };
+                *result_slot.lock().unwrap() = Some(result);
+                ctx.request_repaint();
+            }
         });
     }
 
@@ -698,8 +733,9 @@ impl eframe::App for KadrApp {
                     let tex =
                         ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
                     self.current_texture = Some(tex);
-                    // Immediately start preloading the next image.
-                    if self.slideshow.active && !self.entries.is_empty() {
+                    // Immediately start preloading the next image (always,
+                    // not just during slideshows — makes manual navigation instant too).
+                    if !self.entries.is_empty() {
                         let len = self.entries.len();
                         let next = (self.current_index + 1) % len;
                         self.start_preload(next);

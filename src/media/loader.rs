@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use image::{DynamicImage, ImageBuffer, Rgb};
-use std::io::Read;
 use std::path::Path;
 
 use super::formats::MediaType;
@@ -170,27 +169,39 @@ pub fn save_image(img: &DynamicImage, path: &Path) -> Result<()> {
 // No extra crate needed — the EXIF/TIFF structure is simple enough to parse
 // with a handful of byte-level helpers.
 
-/// Read the first 256 KB of a JPEG file, extract the embedded EXIF thumbnail,
-/// decode it, and return it as a `ColorImage` ready to upload as a texture.
-/// Returns `None` if the file has no EXIF thumbnail or on any parse error —
-/// the caller falls back to the normal full-resolution decode.
-pub fn try_load_exif_thumbnail(path: &Path) -> Option<egui::ColorImage> {
-    // 256 KB covers every real-world EXIF section (typical: 20–80 KB).
-    let mut buf = Vec::with_capacity(256 * 1024);
-    std::fs::File::open(path)
-        .ok()?
-        .take(256 * 1024)
-        .read_to_end(&mut buf)
-        .ok()?;
-
-    let thumb_bytes = find_exif_thumbnail_bytes(&buf)?;
-
+/// Extract the EXIF thumbnail from bytes already in memory.
+/// Used by the single-read JPEG load path so no second file open is needed.
+pub fn try_exif_thumbnail_from_bytes(data: &[u8]) -> Option<egui::ColorImage> {
+    let thumb_bytes = find_exif_thumbnail_bytes(data)?;
     let img = image::load_from_memory(thumb_bytes).ok()?;
     let rgba = img.to_rgba8();
     Some(egui::ColorImage::from_rgba_unmultiplied(
         [rgba.width() as usize, rgba.height() as usize],
         &rgba,
     ))
+}
+
+/// Decode a JPEG from already-read bytes into a `LoadedImage`.
+/// Avoids re-opening the file when the caller already has the data in memory.
+pub fn load_jpeg_from_bytes(data: &[u8]) -> Result<LoadedImage> {
+    let image = load_jpeg_turbo(data)?;
+
+    const MAX_TEX_DIM: u32 = 2560;
+    let width  = image.width();
+    let height = image.height();
+
+    let preview_rgba = if width > MAX_TEX_DIM || height > MAX_TEX_DIM {
+        image.thumbnail(MAX_TEX_DIM, MAX_TEX_DIM).to_rgba8()
+    } else {
+        image.to_rgba8()
+    };
+
+    let preview = egui::ColorImage::from_rgba_unmultiplied(
+        [preview_rgba.width() as usize, preview_rgba.height() as usize],
+        &preview_rgba,
+    );
+
+    Ok(LoadedImage { image, preview, width, height })
 }
 
 /// Scan the JPEG byte stream for an APP1/Exif segment and return a slice of
