@@ -1,11 +1,11 @@
 pub fn egui_icon() -> egui::IconData {
-    let size = 48u32;
+    let size = 64u32;
     let rgba = icon_rgba(size);
     egui::IconData { rgba, width: size, height: size }
 }
 
 pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let fi = size as f32;
+    let fi   = size as f32;
     let half = fi / 2.0;
     let mut out = vec![0u8; (size * size * 4) as usize];
 
@@ -16,14 +16,16 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
             let cx = fx - half;
             let cy = fy - half;
 
+            // Rounded-rect background — dark so letters pop.
             let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
             let bg_a = smoothstep(0.7, -0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
+            // Dark blue-black background, accent-blue letters.
             let la = ka_alpha(fx, fy, fi);
-            let r = lerp(99.0,  255.0, la) as u8;
-            let g = lerp(155.0, 255.0, la) as u8;
-            let b = lerp(255.0, 255.0, la) as u8;
+            let r = lerp(12.0,  99.0, la) as u8;
+            let g = lerp(12.0, 155.0, la) as u8;
+            let b = lerp(18.0, 255.0, la) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((py * size + px) * 4) as usize;
@@ -39,35 +41,40 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
 // ── "ka" letterforms ──────────────────────────────────────────────────────────
 
 fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
-    let sw  = (size * 0.115).max(2.0);
-    let pad = size * 0.150;
+    // Stroke width and layout constants — calibrated for 64 px but scale with size.
+    let sw  = (size * 0.120).max(2.0); // stroke half-width
+    let pad = size * 0.130;
     let h   = size - 2.0 * pad;
 
-    let k_stem_x = pad + sw * 0.85;
-    let k_arm_x  = pad + size * 0.310;
+    // ── K ────────────────────────────────────────────────────────────────────
+    let k_stem_x = pad + sw * 0.80;
+    let k_arm_x  = pad + size * 0.295;
     let k_top    = pad;
     let k_bot    = size - pad;
     let k_mid    = pad + h * 0.50;
 
-    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));
+    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)        // vertical stem
+        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))         // upper diagonal
+        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));        // lower diagonal
 
-    let a_ox       = pad + size * 0.410;
-    let a_bowl_cx  = a_ox + size * 0.148;
-    let a_bowl_cy  = pad + h * 0.50;
-    let a_bowl_r   = h * 0.295;
-    let a_stem_x   = a_ox + size * 0.290;
-    let a_stem_top = pad + h * 0.17;
+    // ── A ────────────────────────────────────────────────────────────────────
+    // Bowl: circle open on the right side; stem to the right of the bowl.
+    let a_ox       = pad + size * 0.400;
+    let a_bowl_cx  = a_ox + size * 0.145;
+    let a_bowl_cy  = pad + h * 0.515;
+    let a_bowl_r   = h * 0.290;
+    let a_stem_x   = a_ox + size * 0.285;
+    let a_stem_top = pad + h * 0.155;
 
     let dist_c  = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
     let angle   = (py - a_bowl_cy).atan2(px - a_bowl_cx);
-    let opening = px > a_bowl_cx && angle.abs() < 0.50;
+    // Narrow opening to the right so the bowl reads clearly as "a".
+    let opening = px > a_bowl_cx && angle.abs() < 0.42;
     let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
 
     let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
 
-    smoothstep(sw + 0.7, sw - 0.7, d_k.min(d_a))
+    smoothstep(sw + 0.8, sw - 0.8, d_k.min(d_a))
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
