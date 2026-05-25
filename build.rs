@@ -13,7 +13,7 @@ fn main() {
 }
 
 fn generate_ico(path: &str) {
-    let sizes: &[u32] = &[16, 32, 48];
+    let sizes: &[u32] = &[16, 24, 32, 48, 64];
     let images: Vec<Vec<u8>> = sizes.iter().map(|&s| make_bmp_image(s)).collect();
 
     let header_size = 6u32 + sizes.len() as u32 * 16;
@@ -79,15 +79,15 @@ fn make_icon_pixels(size: u32) -> Vec<u8> {
             let cy = fy - half;
 
             let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
-            let bg_a = smoothstep(0.7, -0.7, bg_d);
+            let bg_a = smoothstep(-0.7, 0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
             let la = ka_alpha(fx, fy, fi);
 
-            // Blue bg (#63 9B FF) → white letters
-            let b = lerp(255.0, 255.0, la) as u8;
-            let g = lerp(155.0, 255.0, la) as u8;
-            let r = lerp(99.0,  255.0, la) as u8;
+            // Dark bg → accent-blue letters (BGRA order for BMP)
+            let b = lerp(18.0, 255.0, la) as u8;
+            let g = lerp(12.0, 155.0, la) as u8;
+            let r = lerp(12.0,  99.0, la) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((bmp_row * size + px) * 4) as usize;
@@ -101,35 +101,30 @@ fn make_icon_pixels(size: u32) -> Vec<u8> {
 }
 
 fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
-    let sw  = (size * 0.115).max(2.0);
-    let pad = size * 0.150;
-    let h   = size - 2.0 * pad;
+    let sw = (size * 0.062).max(2.0);
+    let t  = size * 0.145;
+    let b  = size * 0.855;
+    let m  = size * 0.500;
 
-    let k_stem_x = pad + sw * 0.85;
-    let k_arm_x  = pad + size * 0.310;
-    let k_top    = pad;
-    let k_bot    = size - pad;
-    let k_mid    = pad + h * 0.50;
+    // K
+    let ksx = size * 0.160;
+    let kax = size * 0.380;
+    let d_k = seg(px, py, ksx, t, ksx, b)
+        .min(seg(px, py, ksx, m, kax, t))
+        .min(seg(px, py, ksx, m, kax, b));
 
-    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));
+    // a — circle bowl open on the right + full-height stem
+    let bcx = size * 0.720;
+    let bcy = size * 0.500;
+    let br  = size * 0.163;
+    let sx  = bcx + br;
 
-    let a_ox       = pad + size * 0.410;
-    let a_bowl_cx  = a_ox + size * 0.148;
-    let a_bowl_cy  = pad + h * 0.50;
-    let a_bowl_r   = h * 0.295;
-    let a_stem_x   = a_ox + size * 0.290;
-    let a_stem_top = pad + h * 0.17;
+    let dc  = ((px - bcx).powi(2) + (py - bcy).powi(2)).sqrt();
+    let ang = (py - bcy).atan2(px - bcx);
+    let d_bowl = if ang.abs() < 0.28 { f32::MAX } else { (dc - br).abs() };
+    let d_a = d_bowl.min(seg(px, py, sx, t, sx, b));
 
-    let dist_c  = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
-    let angle   = (py - a_bowl_cy).atan2(px - a_bowl_cx);
-    let opening = px > a_bowl_cx && angle.abs() < 0.50;
-    let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
-
-    let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
-
-    smoothstep(sw + 0.7, sw - 0.7, d_k.min(d_a))
+    smoothstep(sw - 0.8, sw + 0.8, d_k.min(d_a))
 }
 
 fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {

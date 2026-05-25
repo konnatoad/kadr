@@ -16,17 +16,15 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
             let cx = fx - half;
             let cy = fy - half;
 
-            // Rounded-rect background
-            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.26);
-            let bg_a = smoothstep(0.8, -0.8, bg_d);
+            let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
+            let bg_a = smoothstep(-0.7, 0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
-            let ha = heart_alpha(fx, fy, fi);
-
-            // Kadr accent blue (99, 155, 255) on dark bg (10, 10, 14)
-            let r = lerp(10.0,  99.0, ha) as u8;
-            let g = lerp(10.0, 155.0, ha) as u8;
-            let b = lerp(14.0, 255.0, ha) as u8;
+            let la = ka_alpha(fx, fy, fi);
+            // Dark bg (12,12,18) → accent-blue letters (99,155,255)
+            let r = lerp(12.0,  99.0, la) as u8;
+            let g = lerp(12.0, 155.0, la) as u8;
+            let b = lerp(18.0, 255.0, la) as u8;
             let a = (bg_a * 255.0) as u8;
 
             let idx = ((py * size + px) * 4) as usize;
@@ -39,38 +37,50 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     out
 }
 
-// ── Heart ─────────────────────────────────────────────────────────────────────
+// ── "ka" letterforms ──────────────────────────────────────────────────────────
+//
+// Coordinates are expressed as fractions of `size` so they scale cleanly to
+// every ICO resolution.  Key constraint: K's rightmost stroke extent must not
+// overlap with a's leftmost stroke extent — verified analytically below.
+//
+// At 64 px (sw ≈ 4.0):
+//   K right arm tip  = 0.380 × 64  = 24.3  → visible edge ≈ 24.3 + 4.0 + 0.8 = 29.1
+//   a bowl left edge = bcx - (br + sw + 0.8) = 46.1 - 15.1 = 31.0  → 2 px gap  ✓
+// At 32 px (sw = 2.0 clamped):
+//   K right arm tip  = 12.2  → visible edge ≈ 15.0
+//   a bowl left edge = 23.1 - 8.1 = 15.0                            → flush   ✓
+// At 16 px (sw = 2.0 clamped): minor blend, acceptable at that size.
 
-/// Fills the algebraic heart curve  (x²+y²−1)³ − x²y³ = 0
-/// with a slightly wavy edge for a hand-drawn feel.
-fn heart_alpha(px: f32, py: f32, size: f32) -> f32 {
-    let cx    = size * 0.50;
-    let cy    = size * 0.53; // shifted down slightly so the tip has room
-    let scale = size * 0.37;
+fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
+    let sw = (size * 0.062).max(2.0);   // stroke half-width
+    let t  = size * 0.145;              // top y
+    let b  = size * 0.855;              // bottom y
+    let m  = size * 0.500;              // mid y (K branch point)
 
-    // Normalised coords, y pointing up
-    let x  = (px - cx) / scale;
-    let y  = -(py - cy) / scale;
-    let x2 = x * x;
-    let y2 = y * y;
-    let r2 = x2 + y2;
+    // ── K ────────────────────────────────────────────────────────────────────
+    let ksx = size * 0.160;             // stem centre x
+    let kax = size * 0.380;             // arm tips x
 
-    // Algebraic heart: f < 0 → inside, f > 0 → outside
-    let f  = (r2 - 1.0).powi(3) - x2 * y2 * y;
+    let d_k = seg(px, py, ksx, t, ksx, b)          // vertical stem
+        .min(seg(px, py, ksx, m, kax, t))           // upper diagonal
+        .min(seg(px, py, ksx, m, kax, b));          // lower diagonal
 
-    // Gradient → approximate signed distance in pixels
-    let gx   = 6.0 * x * (r2 - 1.0).powi(2) - 2.0 * x * y2 * y;
-    let gy   = 6.0 * y * (r2 - 1.0).powi(2) - 3.0 * x2 * y2;
-    let grad = (gx * gx + gy * gy).sqrt().max(0.01);
-    let dist = (f / grad) * scale;
+    // ── a ────────────────────────────────────────────────────────────────────
+    // Circle bowl (open on the right) + full-height stem tangent to the bowl.
+    let bcx = size * 0.720;             // bowl centre x
+    let bcy = size * 0.500;             // bowl centre y
+    let br  = size * 0.163;             // bowl radius
+    let sx  = bcx + br;                 // stem x (tangent at 3 o'clock)
 
-    // Wavy boundary: two harmonics give an organic, hand-drawn edge
-    let angle    = y.atan2(x);
-    let wavy     = size * 0.013
-        * ((angle * 3.1).sin() + 0.5 * (angle * 6.3 + 0.9).cos());
-    let d_wavy   = dist + wavy;
+    let dc  = ((px - bcx).powi(2) + (py - bcy).powi(2)).sqrt();
+    let ang = (py - bcy).atan2(px - bcx);
+    // Narrow opening where the stem meets the bowl (< ~16°)
+    let d_bowl = if ang.abs() < 0.28 { f32::MAX } else { (dc - br).abs() };
 
-    smoothstep(1.5, -1.5, d_wavy)
+    // Stem runs full icon height for clear legibility at 16 px
+    let d_a = d_bowl.min(seg(px, py, sx, t, sx, b));
+
+    smoothstep(sw - 0.8, sw + 0.8, d_k.min(d_a))
 }
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
