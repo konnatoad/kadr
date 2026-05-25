@@ -16,13 +16,12 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
             let cx = fx - half;
             let cy = fy - half;
 
-            // Rounded-rect background — dark so letters pop.
             let bg_d = rrect_sdf(cx, cy, half - 1.5, half - 1.5, half * 0.28);
             let bg_a = smoothstep(-0.7, 0.7, bg_d);
             if bg_a < 0.005 { continue; }
 
-            // Dark blue-black background, accent-blue letters.
             let la = ka_alpha(fx, fy, fi);
+            // Dark bg (12,12,18) → accent-blue letters (99,155,255)
             let r = lerp(12.0,  99.0, la) as u8;
             let g = lerp(12.0, 155.0, la) as u8;
             let b = lerp(18.0, 255.0, la) as u8;
@@ -39,40 +38,47 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
 }
 
 // ── "ka" letterforms ──────────────────────────────────────────────────────────
+//
+// Coordinates are expressed as fractions of `size` so they scale cleanly to
+// every ICO resolution.  Key constraint: K's rightmost stroke extent must not
+// overlap with a's leftmost stroke extent — verified analytically below.
+//
+// At 64 px (sw ≈ 4.0):
+//   K right arm tip  = 0.380 × 64  = 24.3  → visible edge ≈ 24.3 + 4.0 + 0.8 = 29.1
+//   a bowl left edge = bcx - (br + sw + 0.8) = 46.1 - 15.1 = 31.0  → 2 px gap  ✓
+// At 32 px (sw = 2.0 clamped):
+//   K right arm tip  = 12.2  → visible edge ≈ 15.0
+//   a bowl left edge = 23.1 - 8.1 = 15.0                            → flush   ✓
+// At 16 px (sw = 2.0 clamped): minor blend, acceptable at that size.
 
 fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
-    // Stroke width and layout constants — calibrated for 64 px but scale with size.
-    let sw  = (size * 0.120).max(2.0); // stroke half-width
-    let pad = size * 0.130;
-    let h   = size - 2.0 * pad;
+    let sw = (size * 0.062).max(2.0);   // stroke half-width
+    let t  = size * 0.145;              // top y
+    let b  = size * 0.855;              // bottom y
+    let m  = size * 0.500;              // mid y (K branch point)
 
     // ── K ────────────────────────────────────────────────────────────────────
-    let k_stem_x = pad + sw * 0.80;
-    let k_arm_x  = pad + size * 0.295;
-    let k_top    = pad;
-    let k_bot    = size - pad;
-    let k_mid    = pad + h * 0.50;
+    let ksx = size * 0.160;             // stem centre x
+    let kax = size * 0.380;             // arm tips x
 
-    let d_k = seg(px, py, k_stem_x, k_top, k_stem_x, k_bot)        // vertical stem
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_top))         // upper diagonal
-        .min(seg(px, py, k_stem_x, k_mid, k_arm_x, k_bot));        // lower diagonal
+    let d_k = seg(px, py, ksx, t, ksx, b)          // vertical stem
+        .min(seg(px, py, ksx, m, kax, t))           // upper diagonal
+        .min(seg(px, py, ksx, m, kax, b));          // lower diagonal
 
-    // ── A ────────────────────────────────────────────────────────────────────
-    // Bowl: circle open on the right side; stem to the right of the bowl.
-    let a_ox       = pad + size * 0.400;
-    let a_bowl_cx  = a_ox + size * 0.145;
-    let a_bowl_cy  = pad + h * 0.515;
-    let a_bowl_r   = h * 0.290;
-    let a_stem_x   = a_ox + size * 0.285;
-    let a_stem_top = pad + h * 0.155;
+    // ── a ────────────────────────────────────────────────────────────────────
+    // Circle bowl (open on the right) + full-height stem tangent to the bowl.
+    let bcx = size * 0.720;             // bowl centre x
+    let bcy = size * 0.500;             // bowl centre y
+    let br  = size * 0.163;             // bowl radius
+    let sx  = bcx + br;                 // stem x (tangent at 3 o'clock)
 
-    let dist_c  = ((px - a_bowl_cx).powi(2) + (py - a_bowl_cy).powi(2)).sqrt();
-    let angle   = (py - a_bowl_cy).atan2(px - a_bowl_cx);
-    // Narrow opening to the right so the bowl reads clearly as "a".
-    let opening = px > a_bowl_cx && angle.abs() < 0.42;
-    let d_bowl  = if opening { f32::MAX } else { (dist_c - a_bowl_r).abs() };
+    let dc  = ((px - bcx).powi(2) + (py - bcy).powi(2)).sqrt();
+    let ang = (py - bcy).atan2(px - bcx);
+    // Narrow opening where the stem meets the bowl (< ~16°)
+    let d_bowl = if ang.abs() < 0.28 { f32::MAX } else { (dc - br).abs() };
 
-    let d_a = d_bowl.min(seg(px, py, a_stem_x, a_stem_top, a_stem_x, k_bot));
+    // Stem runs full icon height for clear legibility at 16 px
+    let d_a = d_bowl.min(seg(px, py, sx, t, sx, b));
 
     smoothstep(sw - 0.8, sw + 0.8, d_k.min(d_a))
 }
