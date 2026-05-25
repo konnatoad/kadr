@@ -13,6 +13,7 @@ use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
 use crate::media::loader::{
     LoadedImage, apply_flip_horizontal, apply_flip_vertical, apply_rotation, save_image,
+    try_load_exif_thumbnail,
 };
 use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
@@ -42,12 +43,16 @@ pub struct KadrApp {
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
+    /// EXIF thumbnail slot — filled fast (first 256 KB of file) before full decode finishes.
+    thumb_loading: Arc<Mutex<Option<LoadResult>>>,
     /// Background slot for the *next* image — filled as soon as the current one loads.
     preload_loading: Arc<Mutex<Option<LoadResult>>>,
     /// Ready-to-use preloaded texture (promoted from preload_loading).
     preload_texture: Option<TextureHandle>,
     /// Which index is sitting in the preload slot (in-flight or ready).
     preload_index: Option<usize>,
+    /// Stored so background threads can call `request_repaint()`.
+    egui_ctx: egui::Context,
     status_msg: Option<(String, std::time::Instant)>,
     video_player: Option<VideoPlayer>,
     /// The outgoing image, kept alive during a crossfade.
@@ -112,9 +117,11 @@ impl KadrApp {
             },
             lua_editor: LuaEditor::default(),
             loading: Arc::new(Mutex::new(None)),
+            thumb_loading: Arc::new(Mutex::new(None)),
             preload_loading: Arc::new(Mutex::new(None)),
             preload_texture: None,
             preload_index: None,
+            egui_ctx: cc.egui_ctx.clone(),
             status_msg: None,
             video_player: None,
             prev_texture: None,
@@ -211,6 +218,8 @@ impl KadrApp {
         self.preload_texture = None;
         self.preload_index = None;
         *self.preload_loading.lock().unwrap() = None;
+        // Any in-flight EXIF thumbnail is also stale — discard it.
+        *self.thumb_loading.lock().unwrap() = None;
         self.load_current_image();
     }
 
@@ -255,11 +264,38 @@ impl KadrApp {
             return;
         }
 
+        // Discard any thumbnail still in-flight from the previous image.
+        *self.thumb_loading.lock().unwrap() = None;
+
         let path = entry.path.clone();
         let index = self.current_index;
         let result_slot = Arc::clone(&self.loading);
+        let thumb_slot  = Arc::clone(&self.thumb_loading);
+        let ctx         = self.egui_ctx.clone();
+
+        let is_jpeg = matches!(
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref(),
+            Some("jpg") | Some("jpeg") | Some("jfif")
+        );
 
         thread::spawn(move || {
+            // Phase 1 — EXIF thumbnail (reads only the first ~256 KB of the
+            // file, so it arrives well before the full multi-megabyte decode).
+            if is_jpeg {
+                if let Some(thumb) = try_load_exif_thumbnail(&path) {
+                    *thumb_slot.lock().unwrap() = Some(LoadResult {
+                        index,
+                        image: Some(thumb),
+                        error: None,
+                    });
+                    ctx.request_repaint();
+                }
+            }
+
+            // Phase 2 — full-resolution decode (replaces the thumbnail).
             let result = match LoadedImage::load(&path) {
                 Ok(img) => LoadResult {
                     index,
@@ -272,8 +308,8 @@ impl KadrApp {
                     error: Some(e.to_string()),
                 },
             };
-
             *result_slot.lock().unwrap() = Some(result);
+            ctx.request_repaint();
         });
     }
 
@@ -637,6 +673,19 @@ impl eframe::App for KadrApp {
                         0,
                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
                     );
+                }
+            }
+        }
+
+        // Poll EXIF thumbnail — show low-res preview instantly while full decode runs.
+        // Only applied when no full image is present yet; index check discards stale results.
+        let thumb_result = self.thumb_loading.lock().unwrap().take();
+        if let Some(result) = thumb_result {
+            if result.index == self.current_index && self.current_texture.is_none() {
+                if let Some(color_img) = result.image {
+                    let tex =
+                        ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
+                    self.current_texture = Some(tex);
                 }
             }
         }
