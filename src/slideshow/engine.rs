@@ -29,16 +29,22 @@ pub struct SlideshowEngine {
     phase: Phase,
     phase_start: Instant,
     interval: Duration,
+    /// Tracks when the current slide began (reset at BeginTransition).
+    /// Used by `elapsed_secs()` so Lua sees a continuously-increasing timer
+    /// that spans both the hold phase and the crossfade — no snap at TransitionDone.
+    slide_start: Instant,
 }
 
 impl SlideshowEngine {
     pub fn new(cfg: &SlideshowConfig) -> Self {
+        let now = Instant::now();
         Self {
             active: false,
             transition_secs: cfg.transition_secs,
             phase: Phase::Holding,
-            phase_start: Instant::now(),
+            phase_start: now,
             interval: Duration::from_secs_f64(cfg.interval_secs),
+            slide_start: now,
         }
     }
 
@@ -49,13 +55,17 @@ impl SlideshowEngine {
     pub fn toggle(&mut self) {
         self.active = !self.active;
         self.phase = Phase::Holding;
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.slide_start = now;
     }
 
     pub fn start(&mut self) {
         self.active = true;
         self.phase = Phase::Holding;
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.slide_start = now;
     }
 
     pub fn stop(&mut self) {
@@ -72,7 +82,9 @@ impl SlideshowEngine {
             Phase::Holding => {
                 if self.phase_start.elapsed() >= self.interval {
                     self.phase = Phase::Transitioning;
-                    self.phase_start = Instant::now();
+                    let now = Instant::now();
+                    self.phase_start = now;
+                    self.slide_start = now;
                     TickResult::BeginTransition
                 } else {
                     TickResult::Nothing
@@ -105,13 +117,14 @@ impl SlideshowEngine {
         }
     }
 
-    /// Seconds elapsed in the current hold phase (for Lua `ctx.elapsed_secs`).
+    /// Seconds elapsed since the current slide began (for Lua `ctx.elapsed_secs`).
+    ///
+    /// `slide_start` is reset at every `BeginTransition`, so this timer runs
+    /// continuously through both the crossfade and the subsequent hold phase.
+    /// Lua therefore sees a smooth, ever-increasing value — no freeze at
+    /// `interval_secs` and no snap back to 0 when `TransitionDone` fires.
     pub fn elapsed_secs(&self) -> f64 {
-        match self.phase {
-            Phase::Holding => self.phase_start.elapsed().as_secs_f64(),
-            // Report full interval during transition so Lua sees a stable value.
-            Phase::Transitioning => self.interval.as_secs_f64(),
-        }
+        self.slide_start.elapsed().as_secs_f64()
     }
 
     pub fn interval_secs(&self) -> f64 {
