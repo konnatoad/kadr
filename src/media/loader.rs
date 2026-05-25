@@ -27,9 +27,23 @@ impl LoadedImage {
     }
 
     pub fn to_egui_image(&self) -> egui::ColorImage {
-        let rgba = self.image.to_rgba8();
+        /// Maximum texture dimension uploaded to the GPU.
+        /// Images larger than this are downscaled before upload so that very
+        /// large photos (e.g. 50 MP raws) don't cause multi-second stalls
+        /// during slideshow transitions.  The raw `DynamicImage` stored in
+        /// `self.image` is unchanged so rotate/flip/save still work at full res.
+        const MAX_TEX_DIM: u32 = 2560;
+
+        let needs_resize = self.image.width() > MAX_TEX_DIM || self.image.height() > MAX_TEX_DIM;
+        let rgba = if needs_resize {
+            self.image
+                .resize(MAX_TEX_DIM, MAX_TEX_DIM, image::imageops::FilterType::Triangle)
+                .to_rgba8()
+        } else {
+            self.image.to_rgba8()
+        };
         egui::ColorImage::from_rgba_unmultiplied(
-            [self.width as usize, self.height as usize],
+            [rgba.width() as usize, rgba.height() as usize],
             &rgba,
         )
     }

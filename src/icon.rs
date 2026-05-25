@@ -85,17 +85,6 @@ fn ka_alpha(px: f32, py: f32, size: f32) -> f32 {
 
 // ── Math helpers ──────────────────────────────────────────────────────────────
 
-fn seg(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len2 = dx * dx + dy * dy;
-    if len2 < 1e-6 {
-        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
-    }
-    let t = (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0);
-    ((px - x1 - t * dx).powi(2) + (py - y1 - t * dy).powi(2)).sqrt()
-}
-
 fn rrect_sdf(cx: f32, cy: f32, hw: f32, hh: f32, r: f32) -> f32 {
     let qx = cx.abs() - hw + r;
     let qy = cy.abs() - hh + r;
