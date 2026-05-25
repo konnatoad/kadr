@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use std::path::Path;
 
@@ -6,6 +6,7 @@ use super::formats::MediaType;
 
 pub struct LoadedImage {
     pub image: DynamicImage,
+    pub preview: egui::ColorImage,
     pub width: u32,
     pub height: u32,
 }
@@ -21,31 +22,35 @@ impl LoadedImage {
             MediaType::Video => return Err(anyhow!("video files cannot be loaded as images")),
         };
 
-        let width = image.width();
-        let height = image.height();
-        Ok(Self { image, width, height })
-    }
-
-    pub fn to_egui_image(&self) -> egui::ColorImage {
-        /// Maximum texture dimension uploaded to the GPU.
-        /// Images larger than this are downscaled before upload so that very
-        /// large photos (e.g. 50 MP raws) don't cause multi-second stalls
-        /// during slideshow transitions.  The raw `DynamicImage` stored in
-        /// `self.image` is unchanged so rotate/flip/save still work at full res.
         const MAX_TEX_DIM: u32 = 2560;
 
-        let needs_resize = self.image.width() > MAX_TEX_DIM || self.image.height() > MAX_TEX_DIM;
-        let rgba = if needs_resize {
-            self.image
-                .resize(MAX_TEX_DIM, MAX_TEX_DIM, image::imageops::FilterType::Triangle)
-                .to_rgba8()
+        let width = image.width();
+        let height = image.height();
+
+        let preview_rgba = if width > MAX_TEX_DIM || height > MAX_TEX_DIM {
+            image.thumbnail(MAX_TEX_DIM, MAX_TEX_DIM).to_rgba8()
         } else {
-            self.image.to_rgba8()
+            image.to_rgba8()
         };
-        egui::ColorImage::from_rgba_unmultiplied(
-            [rgba.width() as usize, rgba.height() as usize],
-            &rgba,
-        )
+
+        let preview = egui::ColorImage::from_rgba_unmultiplied(
+            [
+                preview_rgba.width() as usize,
+                preview_rgba.height() as usize,
+            ],
+            &preview_rgba,
+        );
+
+        Ok(Self {
+            image,
+            preview,
+            width,
+            height,
+        })
+    }
+
+    pub fn to_egui_image(&self) -> &egui::ColorImage {
+        &self.preview
     }
 }
 
@@ -55,8 +60,7 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
 }
 
 fn load_raw(path: &Path) -> Result<DynamicImage> {
-    let raw = rawloader::decode_file(path)
-        .map_err(|e| anyhow!("RAW decode failed: {e}"))?;
+    let raw = rawloader::decode_file(path).map_err(|e| anyhow!("RAW decode failed: {e}"))?;
 
     let (width, height) = (raw.width, raw.height);
 
@@ -79,8 +83,9 @@ fn load_raw(path: &Path) -> Result<DynamicImage> {
                 })
                 .collect();
 
-            let buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(width as u32, height as u32, pixels)
-                .ok_or_else(|| anyhow!("RAW buffer size mismatch"))?;
+            let buf =
+                ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(width as u32, height as u32, pixels)
+                    .ok_or_else(|| anyhow!("RAW buffer size mismatch"))?;
             Ok(DynamicImage::ImageRgb8(buf))
         }
         rawloader::RawImageData::Float(data) => {
@@ -94,8 +99,9 @@ fn load_raw(path: &Path) -> Result<DynamicImage> {
                 })
                 .collect();
 
-            let buf = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(width as u32, height as u32, pixels)
-                .ok_or_else(|| anyhow!("RAW float buffer size mismatch"))?;
+            let buf =
+                ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(width as u32, height as u32, pixels)
+                    .ok_or_else(|| anyhow!("RAW float buffer size mismatch"))?;
             Ok(DynamicImage::ImageRgb8(buf))
         }
     }
