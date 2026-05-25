@@ -55,8 +55,39 @@ impl LoadedImage {
 }
 
 fn load_standard(path: &Path) -> Result<DynamicImage> {
-    let img = image::open(path)?;
-    Ok(img)
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    if matches!(ext.as_deref(), Some("jpg") | Some("jpeg") | Some("jfif")) {
+        let data = std::fs::read(path)?;
+        match load_jpeg_turbo(&data) {
+            Ok(img) => return Ok(img),
+            Err(e) => log::warn!("turbojpeg failed ({e}), falling back to image::open"),
+        }
+    }
+
+    Ok(image::open(path)?)
+}
+
+/// Decode a JPEG using mozjpeg (libjpeg-turbo fork, bundled — no system install needed).
+/// 3-5× faster than the pure-Rust jpeg-decoder used by the `image` crate.
+fn load_jpeg_turbo(data: &[u8]) -> Result<DynamicImage> {
+    let decomp = mozjpeg::Decompress::new_mem(data)
+        .map_err(|e| anyhow::anyhow!("mozjpeg init: {e}"))?;
+
+    let width  = decomp.width()  as u32;
+    let height = decomp.height() as u32;
+
+    let mut rgb = decomp.rgb()
+        .map_err(|e| anyhow::anyhow!("mozjpeg rgb: {e}"))?;
+
+    let pixels: Vec<u8> = rgb.read_scanlines_flat()
+        .map_err(|e| anyhow::anyhow!("mozjpeg: read_scanlines: {e}"))?;
+
+    let buf = image::RgbImage::from_raw(width, height, pixels)
+        .ok_or_else(|| anyhow::anyhow!("mozjpeg: buffer size mismatch"))?;
+    Ok(DynamicImage::ImageRgb8(buf))
 }
 
 fn load_raw(path: &Path) -> Result<DynamicImage> {
