@@ -58,6 +58,8 @@ pub struct KadrApp {
     video_ctx: Option<VideoContext>,
     video_texture: Option<TextureHandle>,
     video_volume: f64,
+    thumb_pending: std::collections::HashSet<usize>,
+    thumb_results: Arc<Mutex<Vec<(usize, ColorImage)>>>,
     /// The outgoing image, kept alive during a crossfade.
     prev_texture: Option<TextureHandle>,
     /// Pixel dimensions of `prev_texture`.
@@ -129,6 +131,8 @@ impl KadrApp {
             video_ctx: None,
             video_texture: None,
             video_volume: 1.0,
+            thumb_pending: std::collections::HashSet::new(),
+            thumb_results: Arc::new(Mutex::new(Vec::new())),
             prev_texture: None,
             prev_image_size: Vec2::ZERO,
             prev_zoom: 1.0,
@@ -181,6 +185,8 @@ impl KadrApp {
         self.entries = entries;
         self.current_index = start_index;
         self.thumb_textures.clear();
+        self.thumb_pending.clear();
+        self.thumb_results.lock().unwrap().clear();
         self.current_texture = None;
         self.viewer_state.reset();
         self.video_ctx = None;
@@ -361,38 +367,28 @@ impl KadrApp {
         });
     }
 
-    fn load_thumb(&mut self, ctx: &egui::Context, index: usize) {
-        if self.thumb_textures.contains_key(&index) || index >= self.entries.len() {
+    fn load_thumb(&mut self, index: usize) {
+        if self.thumb_textures.contains_key(&index)
+            || self.thumb_pending.contains(&index)
+            || index >= self.entries.len()
+        {
             return;
         }
-
         let entry = &self.entries[index];
         if entry.media_type == MediaType::Video {
             return;
         }
-
         let path = entry.path.clone();
-
-        if let Ok(img) = LoadedImage::load(&path) {
-            let color_img = img.to_egui_image().clone();
-            let thumb = make_thumbnail(&color_img, 80);
-
-            let tex = ctx.load_texture(
-                format!("thumb_{index}"),
-                thumb,
-                egui::TextureOptions::LINEAR,
-            );
-
-            if self.thumb_textures.len() >= THUMB_CACHE_LIMIT {
-                if let Some(oldest) = self.thumb_order.first().copied() {
-                    self.thumb_textures.remove(&oldest);
-                    self.thumb_order.remove(0);
-                }
+        let results = Arc::clone(&self.thumb_results);
+        let egui_ctx = self.egui_ctx.clone();
+        self.thumb_pending.insert(index);
+        thread::spawn(move || {
+            if let Ok(img) = LoadedImage::load(&path) {
+                let thumb = make_thumbnail(img.to_egui_image(), 80);
+                results.lock().unwrap().push((index, thumb));
+                egui_ctx.request_repaint();
             }
-
-            self.thumb_order.push(index);
-            self.thumb_textures.insert(index, tex);
-        }
+        });
     }
 
     fn apply_sort(&mut self) {
@@ -773,6 +769,28 @@ impl eframe::App for KadrApp {
             }
         }
 
+        // ── Collect async thumbnail results ──────────────────────────────────
+        let thumb_done: Vec<(usize, ColorImage)> = {
+            let mut lock = self.thumb_results.lock().unwrap();
+            std::mem::take(&mut *lock)
+        };
+        for (idx, img) in thumb_done {
+            self.thumb_pending.remove(&idx);
+            if self.thumb_textures.len() >= THUMB_CACHE_LIMIT {
+                if let Some(oldest) = self.thumb_order.first().copied() {
+                    self.thumb_textures.remove(&oldest);
+                    self.thumb_order.remove(0);
+                }
+            }
+            let tex = ctx.load_texture(
+                format!("thumb_{idx}"),
+                img,
+                egui::TextureOptions::LINEAR,
+            );
+            self.thumb_order.push(idx);
+            self.thumb_textures.insert(idx, tex);
+        }
+
         // ── Slideshow tick ───────────────────────────────────────────────────
         match self.slideshow.tick() {
             TickResult::Nothing => {}
@@ -1007,7 +1025,7 @@ impl eframe::App for KadrApp {
                     let start = current_index.saturating_sub(10);
                     let end = (current_index + 10).min(self.entries.len());
                     for i in start..end {
-                        self.load_thumb(&ctx, i);
+                        self.load_thumb(i);
                     }
 
                     let clicked_idx = {
