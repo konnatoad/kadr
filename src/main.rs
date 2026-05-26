@@ -19,6 +19,11 @@ fn main() -> Result<()> {
         env_logger::init();
     }
 
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("kadr {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let open_path = std::env::args().nth(1).map(std::path::PathBuf::from);
     let config = config::AppConfig::load();
 
