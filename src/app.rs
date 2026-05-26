@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use egui::{Color32, ColorImage, TextureHandle, Vec2};
+use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
 use crate::config::AppConfig;
 use crate::fs::combine::combine_folders;
@@ -24,7 +24,8 @@ use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
 use crate::ui::toolbar::show_toolbar;
 use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
-use crate::video::VideoPlayer;
+use crate::ui::video_controls::{ControlsAction, show_video_controls};
+use crate::video::VideoContext;
 
 const THUMB_CACHE_LIMIT: usize = 200;
 
@@ -54,7 +55,9 @@ pub struct KadrApp {
     /// Stored so background threads can call `request_repaint()`.
     egui_ctx: egui::Context,
     status_msg: Option<(String, std::time::Instant)>,
-    video_player: Option<VideoPlayer>,
+    video_ctx: Option<VideoContext>,
+    video_texture: Option<TextureHandle>,
+    video_volume: f64,
     /// The outgoing image, kept alive during a crossfade.
     prev_texture: Option<TextureHandle>,
     /// Pixel dimensions of `prev_texture`.
@@ -123,7 +126,9 @@ impl KadrApp {
             preload_index: None,
             egui_ctx: cc.egui_ctx.clone(),
             status_msg: None,
-            video_player: None,
+            video_ctx: None,
+            video_texture: None,
+            video_volume: 1.0,
             prev_texture: None,
             prev_image_size: Vec2::ZERO,
             prev_zoom: 1.0,
@@ -178,7 +183,8 @@ impl KadrApp {
         self.thumb_textures.clear();
         self.current_texture = None;
         self.viewer_state.reset();
-        self.video_player = None;
+        self.video_ctx = None;
+        self.video_texture = None;
 
         let folder = if path.is_file() {
             path.parent().unwrap_or(&path).to_path_buf()
@@ -210,7 +216,8 @@ impl KadrApp {
         self.current_index = index;
         self.current_texture = None;
         self.viewer_state.reset();
-        self.video_player = None;
+        self.video_ctx = None;
+        self.video_texture = None;
         // Cancel any in-progress crossfade — manual navigation is always instant.
         self.prev_texture = None;
         self.transition_t = 1.0;
@@ -260,7 +267,13 @@ impl KadrApp {
         let entry = &self.entries[self.current_index];
         if entry.media_type == MediaType::Video {
             let path = entry.path.clone();
-            self.video_player = VideoPlayer::open(&path);
+            match VideoContext::new(&path, self.egui_ctx.clone()) {
+                Ok(ctx) => {
+                    ctx.set_volume(self.video_volume);
+                    self.video_ctx = Some(ctx);
+                }
+                Err(e) => self.set_status(format!("Video error: {e}")),
+            }
             return;
         }
 
@@ -434,19 +447,21 @@ impl KadrApp {
             });
 
             if space {
-                VideoPlayer::play_pause();
+                if let Some(vc) = &self.video_ctx { vc.play_pause(); }
             }
             if left {
-                VideoPlayer::seek_back();
+                if let Some(vc) = &self.video_ctx { vc.seek_relative(-5.0); }
             }
             if right {
-                VideoPlayer::seek_fwd();
+                if let Some(vc) = &self.video_ctx { vc.seek_relative(5.0); }
             }
             if up {
-                VideoPlayer::volume_up();
+                self.video_volume = (self.video_volume + 0.05).min(1.0);
+                if let Some(vc) = &self.video_ctx { vc.set_volume(self.video_volume); }
             }
             if down {
-                VideoPlayer::volume_down();
+                self.video_volume = (self.video_volume - 0.05).max(0.0);
+                if let Some(vc) = &self.video_ctx { vc.set_volume(self.video_volume); }
             }
             if pgdn {
                 self.navigate(1);
@@ -783,7 +798,8 @@ impl eframe::App for KadrApp {
                     let next = ((self.current_index as i64 + 1).rem_euclid(len)) as usize;
                     self.current_index = next;
                     self.viewer_state.reset();
-                    self.video_player = None;
+                    self.video_ctx = None;
+                    self.video_texture = None;
 
                     if self.preload_index == Some(next) && self.preload_texture.is_some() {
                         if let Some(tex) = self.preload_texture.take() {
@@ -887,6 +903,12 @@ impl eframe::App for KadrApp {
         if self.fullscreen {
             ui.painter()
                 .rect_filled(ui.available_rect_before_wrap(), 0.0, bg);
+
+            // In fullscreen, video uses the same rendering path as the normal panel —
+            // return early here so it falls through to the CentralPanel below.
+            let is_video = !self.entries.is_empty()
+                && self.entries[self.current_index].media_type == MediaType::Video;
+            if !is_video {
             let (tex, size) = if let Some(t) = self.current_texture.clone() {
                 let s = Vec2::new(t.size()[0] as f32, t.size()[1] as f32);
                 (t, s)
@@ -908,6 +930,7 @@ impl eframe::App for KadrApp {
                 });
             show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
             return;
+            } // end !is_video
         }
 
         egui::Panel::top("toolbar").show_inside(ui, |ui| {
@@ -1025,40 +1048,60 @@ impl eframe::App for KadrApp {
 
                 let is_video = self.entries[self.current_index].media_type == MediaType::Video;
                 if is_video {
-                    let file_name = self.entries[self.current_index].file_name.clone();
-                    let avail_h = ui.available_height();
-                    ui.add_space(((avail_h - 210.0) * 0.5).max(8.0));
-                    ui.vertical_centered(|ui| {
-                        draw_film_icon(ui);
-                        ui.add_space(14.0);
-                        ui.label(
-                            egui::RichText::new(&file_name)
-                                .size(17.0)
-                                .color(Color32::from_gray(200)),
-                        );
-                        ui.add_space(10.0);
-                        ui.label(
-                            egui::RichText::new("Playing in system player")
-                                .size(12.0)
-                                .color(Color32::from_gray(85)),
-                        );
-                        ui.add_space(30.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Space  play/pause     Up/Down  volume     Left/Right  rewind/fwd     PageUp/Down  prev/next",
-                            )
-                            .size(10.5)
-                            .color(Color32::from_gray(58))
-                            .monospace(),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new("(click this window first to focus keyboard here)")
-                                .size(10.0)
-                                .color(Color32::from_gray(42))
-                                .italics(),
-                        );
-                    });
+                    // Poll for new decoded frame
+                    if let Some(frame) = self.video_ctx.as_mut().and_then(|vc| vc.poll_frame()) {
+                        if let Some(tex) = self.video_texture.as_mut() {
+                            tex.set(frame, egui::TextureOptions::LINEAR);
+                        } else {
+                            self.video_texture = Some(ctx.load_texture(
+                                "video_frame",
+                                frame,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                    }
+
+                    let avail = ui.available_rect_before_wrap();
+
+                    if let Some(tex) = &self.video_texture {
+                        let tw = tex.size()[0] as f32;
+                        let th = tex.size()[1] as f32;
+                        if tw > 0.0 && th > 0.0 {
+                            // Letterbox: scale to fit, preserve aspect ratio
+                            let scale = (avail.width() / tw).min(avail.height() / th);
+                            let dw = tw * scale;
+                            let dh = th * scale;
+                            let center = avail.center();
+                            let img_rect = egui::Rect::from_center_size(center, vec2(dw, dh));
+                            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                            ui.painter().image(tex.id(), img_rect, uv, Color32::WHITE);
+                        }
+                    } else {
+                        // Waiting for first frame
+                        ui.centered_and_justified(|ui| { ui.spinner(); });
+                    }
+
+                    // Controls overlay
+                    let (pos, dur, paused, vol) = if let Some(vc) = &self.video_ctx {
+                        (vc.get_position(), vc.get_duration(), vc.is_paused(), vc.get_volume())
+                    } else {
+                        (0.0, 0.0, true, self.video_volume)
+                    };
+
+                    match show_video_controls(ui, avail, paused, pos, dur, vol) {
+                        ControlsAction::PlayPause => {
+                            if let Some(vc) = &self.video_ctx { vc.play_pause(); }
+                        }
+                        ControlsAction::SeekTo(s) => {
+                            if let Some(vc) = &self.video_ctx { vc.seek_absolute(s); }
+                        }
+                        ControlsAction::SetVolume(v) => {
+                            self.video_volume = v;
+                            if let Some(vc) = &self.video_ctx { vc.set_volume(v); }
+                        }
+                        ControlsAction::None => {}
+                    }
+
                     return;
                 }
 
@@ -1389,43 +1432,6 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_global_style(style);
 }
 
-fn draw_film_icon(ui: &mut egui::Ui) {
-    let size = 52.0_f32;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let p = ui.painter();
-    let c = rect.center();
-
-    let body_color = egui::Color32::from_gray(72);
-    let hole_color = egui::Color32::from_gray(28);
-    let play_color = egui::Color32::from_gray(160);
-
-    // Main strip
-    let body = egui::Rect::from_center_size(c, egui::vec2(size * 0.84, size * 0.64));
-    p.rect_filled(body, 3.0, body_color);
-
-    // Perforations top/bottom
-    let hole_r = size * 0.056;
-    for row in [c.y - size * 0.27, c.y + size * 0.27] {
-        for col in [-2i32, -1, 0, 1, 2] {
-            p.circle_filled(
-                egui::pos2(c.x + col as f32 * size * 0.155, row),
-                hole_r,
-                hole_color,
-            );
-        }
-    }
-
-    // Play triangle
-    let h = size * 0.22;
-    let p1 = egui::pos2(c.x - h * 0.5, c.y - h);
-    let p2 = egui::pos2(c.x - h * 0.5, c.y + h);
-    let p3 = egui::pos2(c.x + h, c.y);
-    p.add(egui::Shape::convex_polygon(
-        vec![p1, p2, p3],
-        play_color,
-        egui::Stroke::NONE,
-    ));
-}
 
 fn make_thumbnail(img: &ColorImage, max_size: usize) -> ColorImage {
     let [w, h] = img.size;

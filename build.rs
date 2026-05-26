@@ -1,4 +1,20 @@
 fn main() {
+    // ── libmpv linking ────────────────────────────────────────────────────────
+    // At build time: libmpv.dll.a (MinGW import library) must be on the search path.
+    // The dev files live at ../target/release/ relative to this crate; that path is
+    // added automatically below. Override with MPV_LIB_DIR if needed.
+    //
+    // At runtime: libmpv-2.dll must be next to kadr.exe (the installer bundles it).
+    let default_dir = {
+        let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+        std::path::PathBuf::from(&manifest).join("..").join("target").join("release")
+    };
+    let lib_dir = std::env::var("MPV_LIB_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(default_dir);
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    // The actual #[link(name = "mpv")] attribute lives in video/mpv_ffi.rs.
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let ico_path = format!("{out_dir}/kadr.ico");
