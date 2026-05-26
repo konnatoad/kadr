@@ -6,7 +6,7 @@ Fast, minimal image and video viewer built with Rust and egui.
 
 - Images: JPEG, PNG, GIF, WebP, BMP, TIFF, AVIF, HEIC, ICO and more
 - RAW: CR2, CR3, NEF, ARW, DNG, ORF, RAF and other common RAW formats
-- Video: MP4, MKV, AVI, MOV, WebM and more (MCI in-app playback for supported codecs; falls back to system player otherwise)
+- Video: MP4, MKV, AVI, MOV, WebM and more (in-app playback via libmpv, installed alongside kadr)
 - Thumbnail strip with lazy loading
 - Folder and file scanning with optional subfolder traversal
 - Sort by name, date, or size
