@@ -20,10 +20,13 @@ fn main() {
         let ico_path = format!("{out_dir}/kadr.ico");
         generate_ico(&ico_path);
 
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
         let mut res = winres::WindowsResource::new();
         res.set_icon(&ico_path);
         res.set("ProductName", "kadr");
         res.set("FileDescription", "kadr image viewer");
+        res.set("FileVersion", &version);
+        res.set("ProductVersion", &version);
         res.compile().expect("winres failed — is a C compiler (MSVC or MinGW) available?");
     }
 }
