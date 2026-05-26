@@ -1,2 +1,3 @@
-mod player;
-pub use player::VideoPlayer;
+mod mpv_ffi;
+mod context;
+pub use context::VideoContext;
