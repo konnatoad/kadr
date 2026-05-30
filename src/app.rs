@@ -6,7 +6,8 @@ use std::thread;
 use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
 use crate::config::AppConfig;
-use crate::fs::combine::combine_folders;
+use crate::fs::combine::{combine_folders, count_images, CombineResult};
+use std::sync::atomic::AtomicUsize;
 use crate::fs::scanner::{ScanOptions, scan_folder};
 use crate::fs::sorter::sort_entries;
 use crate::keybinds::KeyAction;
@@ -41,6 +42,7 @@ pub struct KadrApp {
     lua_script: Option<LuaSlideshowScript>,
     fullscreen: bool,
     combine_dialog: CombineDialog,
+    combine_result_rx: Arc<Mutex<Option<Result<CombineResult, String>>>>,
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
@@ -103,6 +105,7 @@ impl KadrApp {
             lua_script: LuaSlideshowScript::from_str(&config.slideshow.lua_script).ok(),
             fullscreen: false,
             combine_dialog: CombineDialog::default(),
+            combine_result_rx: Arc::new(Mutex::new(None)),
             settings_dialog: SettingsDialog {
                 show_thumbnails: config.show_thumbnails,
                 scan_subfolders: config.scan_subfolders,
@@ -1213,11 +1216,28 @@ impl eframe::App for KadrApp {
             });
 
         // Dialogs
+        // Poll combine background thread result
+        if self.combine_dialog.running {
+            if let Ok(mut slot) = self.combine_result_rx.lock() {
+                if let Some(res) = slot.take() {
+                    self.combine_dialog.running = false;
+                    self.combine_dialog.result_msg = Some(match res {
+                        Ok(r) => format!(
+                            "Done: {} copied, {} renamed, {} errors",
+                            r.copied, r.renamed, r.errors.len()
+                        ),
+                        Err(e) => format!("Error: {e}"),
+                    });
+                }
+            }
+            ctx.request_repaint();
+        }
+
         let combine_action = self.combine_dialog.show(&ctx);
         match combine_action {
-            CombineAction::PickSource => {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    self.combine_dialog.source_path = Some(path);
+            CombineAction::PickSources => {
+                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                    self.combine_dialog.source_paths.extend(paths);
                 }
             }
             CombineAction::PickDest => {
@@ -1225,19 +1245,25 @@ impl eframe::App for KadrApp {
                     self.combine_dialog.dest_parent = Some(path);
                 }
             }
-            CombineAction::Run { source, dest } => match combine_folders(&source, &dest) {
-                Ok(r) => {
-                    self.combine_dialog.result_msg = Some(format!(
-                        "Done: {} copied, {} renamed, {} errors",
-                        r.copied,
-                        r.renamed,
-                        r.errors.len()
-                    ));
-                }
-                Err(e) => {
-                    self.combine_dialog.result_msg = Some(format!("Error: {e}"));
-                }
-            },
+            CombineAction::Run { sources, dest } => {
+                let total = count_images(&sources);
+                self.combine_dialog.total = total;
+                self.combine_dialog.progress = Arc::new(AtomicUsize::new(0));
+                self.combine_dialog.running = true;
+                self.combine_dialog.result_msg = None;
+
+                let progress = Arc::clone(&self.combine_dialog.progress);
+                let result_tx = Arc::clone(&self.combine_result_rx);
+                let ctx_clone = ctx.clone();
+                thread::spawn(move || {
+                    let res = combine_folders(&sources, &dest, progress)
+                        .map_err(|e| e.to_string());
+                    if let Ok(mut slot) = result_tx.lock() {
+                        *slot = Some(res);
+                    }
+                    ctx_clone.request_repaint();
+                });
+            }
             CombineAction::Close => {
                 self.combine_dialog.open = false;
                 self.combine_dialog.result_msg = None;
