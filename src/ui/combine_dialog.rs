@@ -1,32 +1,38 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub struct CombineDialog {
     pub open: bool,
-    pub source_path: Option<PathBuf>,
+    pub source_paths: Vec<PathBuf>,
     pub dest_name: String,
     pub dest_parent: Option<PathBuf>,
     pub running: bool,
     pub result_msg: Option<String>,
+    pub progress: Arc<AtomicUsize>,
+    pub total: usize,
 }
 
 impl Default for CombineDialog {
     fn default() -> Self {
         Self {
             open: false,
-            source_path: None,
+            source_paths: Vec::new(),
             dest_name: "combined".to_string(),
             dest_parent: None,
             running: false,
             result_msg: None,
+            progress: Arc::new(AtomicUsize::new(0)),
+            total: 0,
         }
     }
 }
 
 pub enum CombineAction {
     None,
-    PickSource,
+    PickSources,
     PickDest,
-    Run { source: PathBuf, dest: PathBuf },
+    Run { sources: Vec<PathBuf>, dest: PathBuf },
     Close,
 }
 
@@ -45,22 +51,41 @@ impl CombineDialog {
             .collapsible(false)
             .min_width(400.0)
             .show(ctx, |ui| {
-                ui.label("Source folder (will be scanned recursively):");
                 ui.horizontal(|ui| {
-                    let src_text = self
-                        .source_path
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "not selected".to_string());
-                    ui.label(&src_text);
-                    if ui.button("Browse…").clicked() {
-                        action = CombineAction::PickSource;
+                    ui.label("Source folders:");
+                    if !self.running {
+                        if ui.button("Add folders…").clicked() {
+                            action = CombineAction::PickSources;
+                        }
                     }
                 });
 
+                if self.source_paths.is_empty() {
+                    ui.label("No folders selected.");
+                } else {
+                    let mut to_remove: Option<usize> = None;
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            for (i, path) in self.source_paths.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    if !self.running && ui.small_button("X").clicked() {
+                                        to_remove = Some(i);
+                                    }
+                                    ui.label(path.to_string_lossy().as_ref());
+                                });
+                            }
+                        });
+                    if let Some(i) = to_remove {
+                        self.source_paths.remove(i);
+                    }
+                }
+
                 ui.add_space(8.0);
                 ui.label("Output folder name:");
-                ui.text_edit_singleline(&mut self.dest_name);
+                ui.add_enabled_ui(!self.running, |ui| {
+                    ui.text_edit_singleline(&mut self.dest_name);
+                });
 
                 ui.add_space(4.0);
                 ui.label("Output parent directory:");
@@ -71,12 +96,22 @@ impl CombineDialog {
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "not selected".to_string());
                     ui.label(&dest_text);
-                    if ui.button("Browse…").clicked() {
+                    if !self.running && ui.button("Browse…").clicked() {
                         action = CombineAction::PickDest;
                     }
                 });
 
                 ui.add_space(12.0);
+
+                if self.running {
+                    let done = self.progress.load(Ordering::Relaxed);
+                    let total = self.total;
+                    let fraction = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(fraction)
+                        .text(format!("{}/{} copied", done, total))
+                        .animate(true));
+                    ui.add_space(4.0);
+                }
 
                 if let Some(msg) = &self.result_msg {
                     ui.colored_label(egui::Color32::from_rgb(100, 220, 100), msg);
@@ -84,26 +119,24 @@ impl CombineDialog {
                 }
 
                 ui.horizontal(|ui| {
-                    let can_run = self.source_path.is_some()
+                    let can_run = !self.source_paths.is_empty()
                         && self.dest_parent.is_some()
                         && !self.dest_name.trim().is_empty()
                         && !self.running;
 
                     ui.add_enabled_ui(can_run, |ui| {
                         if ui.button("Combine").clicked() {
-                            if let (Some(src), Some(parent)) =
-                                (&self.source_path, &self.dest_parent)
-                            {
+                            if let Some(parent) = &self.dest_parent {
                                 let dest = parent.join(self.dest_name.trim());
                                 action = CombineAction::Run {
-                                    source: src.clone(),
+                                    sources: self.source_paths.clone(),
                                     dest,
                                 };
                             }
                         }
                     });
 
-                    if ui.button("Close").clicked() {
+                    if !self.running && ui.button("Close").clicked() {
                         action = CombineAction::Close;
                     }
                 });

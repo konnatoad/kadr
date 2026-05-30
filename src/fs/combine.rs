@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::media::formats::is_image;
 use walkdir::WalkDir;
@@ -12,42 +14,58 @@ pub struct CombineResult {
     pub errors: Vec<(PathBuf, String)>,
 }
 
-pub fn combine_folders(source: &Path, dest: &Path) -> Result<CombineResult> {
+pub fn count_images(sources: &[PathBuf]) -> usize {
+    sources.iter().flat_map(|src| {
+        WalkDir::new(src).follow_links(true).into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file() && is_image(e.path()))
+    }).count()
+}
+
+pub fn combine_folders(
+    sources: &[PathBuf],
+    dest: &Path,
+    progress: Arc<AtomicUsize>,
+) -> Result<CombineResult> {
     std::fs::create_dir_all(dest)?;
 
     let mut result = CombineResult::default();
     let mut name_counts: HashMap<String, u32> = HashMap::new();
 
-    for entry in WalkDir::new(source).follow_links(true) {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                result.errors.push((PathBuf::new(), e.to_string()));
+    for source in sources {
+        for entry in WalkDir::new(source).follow_links(true) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    result.errors.push((PathBuf::new(), e.to_string()));
+                    continue;
+                }
+            };
+
+            if !entry.file_type().is_file() {
                 continue;
             }
-        };
 
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let src_path = entry.path();
-        if !is_image(src_path) {
-            continue;
-        }
-
-        let dest_path = resolve_dest_path(src_path, source, dest, &mut name_counts);
-        let was_renamed = dest_path.file_name() != src_path.file_name();
-
-        match std::fs::copy(src_path, &dest_path) {
-            Ok(_) => {
-                result.copied += 1;
-                if was_renamed {
-                    result.renamed += 1;
-                }
+            let src_path = entry.path();
+            if !is_image(src_path) {
+                continue;
             }
-            Err(e) => {
-                result.errors.push((src_path.to_path_buf(), e.to_string()));
+
+            let dest_path = resolve_dest_path(src_path, source, dest, &mut name_counts);
+            let was_renamed = dest_path.file_name() != src_path.file_name();
+
+            match std::fs::copy(src_path, &dest_path) {
+                Ok(_) => {
+                    result.copied += 1;
+                    if was_renamed {
+                        result.renamed += 1;
+                    }
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    result.errors.push((src_path.to_path_buf(), e.to_string()));
+                    progress.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
