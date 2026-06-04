@@ -31,7 +31,7 @@ pub fn media_type_for_path(path: &Path) -> Option<MediaType> {
     let ext = path.extension()?.to_ascii_lowercase();
     let ext = ext.to_str()?;
     match ext {
-        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tiff" | "tif"
+        "jpg" | "jpeg" | "jfif" | "png" | "gif" | "webp" | "bmp" | "tiff" | "tif"
         | "avif" | "heic" | "heif" | "ico" | "pnm" | "pbm" | "pgm" | "ppm" => {
             Some(MediaType::Image)
         }
