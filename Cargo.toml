@@ -1,6 +1,6 @@
 [package]
 name = "kadr"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "A fast, minimal image viewer"
 
@@ -9,10 +9,21 @@ name = "kadr"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
+eframe = { version = "0.34", default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "persistence",
+] }
 egui = "0.34"
 egui_extras = { version = "0.34", features = ["image"] }
-image = { version = "0.25", features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+image = { version = "0.25", features = [
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "bmp",
+  "tiff",
+] }
 mozjpeg = "0.10"
 rawloader = "0.37"
 serde = { version = "1", features = ["derive"] }
