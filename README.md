@@ -46,10 +46,10 @@ Fast, minimal image and video viewer built with Rust and egui.
 | Key | Action |
 |-----|--------|
 | `Space` | Play / pause |
-| `Arrow Left` | Seek back 10 s |
-| `Arrow Right` | Seek forward 10 s |
-| `Arrow Up` | Volume +10 % |
-| `Arrow Down` | Volume -10 % |
+| `Arrow Left` | Seek back 5 s |
+| `Arrow Right` | Seek forward 5 s |
+| `Arrow Up` | Volume +5 % |
+| `Arrow Down` | Volume -5 % |
 | `PageUp` / `PageDown` | Previous / next file in folder |
 
 All shortcuts are re-bindable from Settings (`Ctrl+,`).
