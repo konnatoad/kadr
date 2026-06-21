@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use lru::LruCache;
 
 use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
@@ -31,12 +33,11 @@ use crate::video::VideoContext;
 const THUMB_CACHE_LIMIT: usize = 200;
 
 pub struct KadrApp {
-    thumb_order: Vec<usize>,
     config: AppConfig,
     entries: Vec<MediaEntry>,
     current_index: usize,
     current_texture: Option<TextureHandle>,
-    thumb_textures: HashMap<usize, TextureHandle>,
+    thumb_textures: LruCache<usize, TextureHandle>,
     viewer_state: ViewerState,
     slideshow: SlideshowEngine,
     lua_script: Option<LuaSlideshowScript>,
@@ -94,12 +95,11 @@ impl KadrApp {
         apply_theme(&cc.egui_ctx);
 
         let mut app = Self {
-            thumb_order: Vec::new(),
             config: config.clone(),
             entries: Vec::new(),
             current_index: 0,
             current_texture: None,
-            thumb_textures: HashMap::new(),
+            thumb_textures: LruCache::new(NonZeroUsize::new(THUMB_CACHE_LIMIT).unwrap()),
             viewer_state: ViewerState::default(),
             slideshow: SlideshowEngine::new(&config.slideshow),
             lua_script: LuaSlideshowScript::from_str(&config.slideshow.lua_script).ok(),
@@ -371,7 +371,7 @@ impl KadrApp {
     }
 
     fn load_thumb(&mut self, index: usize) {
-        if self.thumb_textures.contains_key(&index)
+        if self.thumb_textures.contains(&index)
             || self.thumb_pending.contains(&index)
             || index >= self.entries.len()
         {
@@ -385,7 +385,7 @@ impl KadrApp {
         let results = Arc::clone(&self.thumb_results);
         let egui_ctx = self.egui_ctx.clone();
         self.thumb_pending.insert(index);
-        thread::spawn(move || {
+        rayon::spawn(move || {
             if let Ok(img) = LoadedImage::load(&path) {
                 let thumb = make_thumbnail(img.to_egui_image(), 80);
                 results.lock().unwrap().push((index, thumb));
@@ -624,7 +624,7 @@ impl KadrApp {
         if let Ok(img) = LoadedImage::load(&path) {
             let rotated = apply_rotation(img.image, degrees);
             if save_image(&rotated, &path).is_ok() {
-                self.thumb_textures.remove(&self.current_index);
+                self.thumb_textures.pop(&self.current_index);
                 self.current_texture = None;
                 self.load_current_image();
                 if !self.entries.is_empty() {
@@ -648,7 +648,7 @@ impl KadrApp {
                 apply_flip_vertical(img.image)
             };
             if save_image(&flipped, &path).is_ok() {
-                self.thumb_textures.remove(&self.current_index);
+                self.thumb_textures.pop(&self.current_index);
                 self.current_texture = None;
                 self.load_current_image();
                 self.set_status("Saved.");
@@ -779,19 +779,12 @@ impl eframe::App for KadrApp {
         };
         for (idx, img) in thumb_done {
             self.thumb_pending.remove(&idx);
-            if self.thumb_textures.len() >= THUMB_CACHE_LIMIT {
-                if let Some(oldest) = self.thumb_order.first().copied() {
-                    self.thumb_textures.remove(&oldest);
-                    self.thumb_order.remove(0);
-                }
-            }
             let tex = ctx.load_texture(
                 format!("thumb_{idx}"),
                 img,
                 egui::TextureOptions::LINEAR,
             );
-            self.thumb_order.push(idx);
-            self.thumb_textures.insert(idx, tex);
+            self.thumb_textures.put(idx, tex);
         }
 
         // ── Slideshow tick ───────────────────────────────────────────────────
@@ -1037,7 +1030,7 @@ impl eframe::App for KadrApp {
                             .iter()
                             .enumerate()
                             .map(|(i, e)| ThumbEntry {
-                                texture: self.thumb_textures.get(&i),
+                                texture: self.thumb_textures.peek(&i),
                                 label: &e.file_name,
                                 is_video: e.media_type == MediaType::Video,
                             })
