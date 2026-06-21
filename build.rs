@@ -1,4 +1,22 @@
 fn main() {
+    // ── libheif linking ───────────────────────────────────────────────────────
+    if std::env::var("CARGO_FEATURE_LIBHEIF").is_ok() {
+        let default_dir = std::path::PathBuf::from("C:/vcpkg/installed/x64-windows/lib");
+        let lib_dir = std::env::var("HEIF_LIB_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(default_dir);
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    }
+
+    // ── libraw_r linking ──────────────────────────────────────────────────────
+    if std::env::var("CARGO_FEATURE_LIBRAW_NATIVE").is_ok() {
+        let default_dir = std::path::PathBuf::from("C:/vcpkg/installed/x64-windows/lib");
+        let lib_dir = std::env::var("LIBRAW_LIB_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or(default_dir);
+        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    }
+
     // ── libmpv linking ────────────────────────────────────────────────────────
     // At build time: libmpv.dll.a (MinGW import library) must be on the search path.
     // The dev files live at ../target/release/ relative to this crate; that path is

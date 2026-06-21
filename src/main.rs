@@ -3,8 +3,12 @@
 mod app;
 mod config;
 mod fs;
+#[cfg(feature = "libheif")]
+mod heif;
 mod icon;
 mod keybinds;
+#[cfg(feature = "libraw-native")]
+mod libraw_native;
 mod media;
 mod monitor;
 mod slideshow;

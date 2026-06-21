@@ -67,6 +67,12 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
         }
     }
 
+    #[cfg(feature = "libheif")]
+    if matches!(ext.as_deref(), Some("heic") | Some("heif")) {
+        let data = std::fs::read(path)?;
+        return crate::heif::decode_heif(&data);
+    }
+
     Ok(image::open(path)?)
 }
 
@@ -91,6 +97,13 @@ fn load_jpeg_turbo(data: &[u8]) -> Result<DynamicImage> {
 }
 
 fn load_raw(path: &Path) -> Result<DynamicImage> {
+    #[cfg(feature = "libraw-native")]
+    {
+        let data = std::fs::read(path)?;
+        return crate::libraw_native::decode_raw(&data);
+    }
+
+    #[cfg_attr(feature = "libraw-native", allow(unreachable_code))]
     let raw = rawloader::decode_file(path).map_err(|e| anyhow!("RAW decode failed: {e}"))?;
 
     let (width, height) = (raw.width, raw.height);
