@@ -8,6 +8,10 @@ description = "A fast, minimal image viewer"
 name = "kadr"
 path = "src/main.rs"
 
+[features]
+libheif = []
+libraw-native = []
+
 [dependencies]
 eframe = { version = "0.34", default-features = false, features = [
   "default_fonts",
@@ -35,6 +39,7 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 rfd = "0.17"
+scopeguard = "1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "shellapi"] }
