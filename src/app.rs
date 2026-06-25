@@ -55,6 +55,8 @@ pub struct KadrApp {
     preload_texture: Option<TextureHandle>,
     /// Which index is sitting in the preload slot (in-flight or ready).
     preload_index: Option<usize>,
+    /// Result slot for background rotate/flip — Ok(index) on success.
+    transform_result: Arc<Mutex<Option<Result<usize, String>>>>,
     /// Stored so background threads can call `request_repaint()`.
     egui_ctx: egui::Context,
     status_msg: Option<(String, std::time::Instant)>,
@@ -129,6 +131,7 @@ impl KadrApp {
             preload_loading: Arc::new(Mutex::new(None)),
             preload_texture: None,
             preload_index: None,
+            transform_result: Arc::new(Mutex::new(None)),
             egui_ctx: cc.egui_ctx.clone(),
             status_msg: None,
             video_ctx: None,
@@ -386,8 +389,34 @@ impl KadrApp {
         let egui_ctx = self.egui_ctx.clone();
         self.thumb_pending.insert(index);
         rayon::spawn(move || {
-            if let Ok(img) = LoadedImage::load(&path) {
-                let thumb = make_thumbnail(img.to_egui_image(), 80);
+            let is_jpeg = matches!(
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .as_deref(),
+                Some("jpg") | Some("jpeg") | Some("jfif")
+            );
+
+            let color_img = if is_jpeg {
+                // Fast-path: read first 256KB and use the EXIF thumbnail if present.
+                // Camera JPEGs almost always embed one; reads ~256KB instead of 20-60MB.
+                use std::io::Read;
+                if let Ok(mut f) = std::fs::File::open(&path) {
+                    let mut header = Vec::with_capacity(256 * 1024);
+                    let _ = f.by_ref().take(256 * 1024).read_to_end(&mut header);
+                    if let Some(thumb) = try_exif_thumbnail_from_bytes(&header) {
+                        Some(make_thumbnail(&thumb, 80))
+                    } else {
+                        LoadedImage::load(&path).ok().map(|img| make_thumbnail(img.to_egui_image(), 80))
+                    }
+                } else {
+                    None
+                }
+            } else {
+                LoadedImage::load(&path).ok().map(|img| make_thumbnail(img.to_egui_image(), 80))
+            };
+
+            if let Some(thumb) = color_img {
                 results.lock().unwrap().push((index, thumb));
                 egui_ctx.request_repaint();
             }
@@ -621,19 +650,17 @@ impl KadrApp {
             return;
         }
         let path = self.entries[self.current_index].path.clone();
-        if let Ok(img) = LoadedImage::load(&path) {
-            let rotated = apply_rotation(img.image, degrees);
-            if save_image(&rotated, &path).is_ok() {
-                self.thumb_textures.pop(&self.current_index);
-                self.current_texture = None;
-                self.load_current_image();
-                if !self.entries.is_empty() {
-                    let next = (self.current_index + 1) % self.entries.len();
-                    self.start_preload(next);
-                }
-                self.set_status("Saved.");
-            }
-        }
+        let index = self.current_index;
+        let result_slot = Arc::clone(&self.transform_result);
+        let ctx = self.egui_ctx.clone();
+        thread::spawn(move || {
+            let res = LoadedImage::load(&path)
+                .and_then(|img| save_image(&apply_rotation(img.image, degrees), &path))
+                .map(|_| index)
+                .map_err(|e| e.to_string());
+            *result_slot.lock().unwrap() = Some(res);
+            ctx.request_repaint();
+        });
     }
 
     fn flip_current(&mut self, horizontal: bool) {
@@ -641,19 +668,24 @@ impl KadrApp {
             return;
         }
         let path = self.entries[self.current_index].path.clone();
-        if let Ok(img) = LoadedImage::load(&path) {
-            let flipped = if horizontal {
-                apply_flip_horizontal(img.image)
-            } else {
-                apply_flip_vertical(img.image)
-            };
-            if save_image(&flipped, &path).is_ok() {
-                self.thumb_textures.pop(&self.current_index);
-                self.current_texture = None;
-                self.load_current_image();
-                self.set_status("Saved.");
-            }
-        }
+        let index = self.current_index;
+        let result_slot = Arc::clone(&self.transform_result);
+        let ctx = self.egui_ctx.clone();
+        thread::spawn(move || {
+            let res = LoadedImage::load(&path)
+                .and_then(|img| {
+                    let flipped = if horizontal {
+                        apply_flip_horizontal(img.image)
+                    } else {
+                        apply_flip_vertical(img.image)
+                    };
+                    save_image(&flipped, &path)
+                })
+                .map(|_| index)
+                .map_err(|e| e.to_string());
+            *result_slot.lock().unwrap() = Some(res);
+            ctx.request_repaint();
+        });
     }
 
     fn pick_folder(&mut self) {
@@ -769,6 +801,24 @@ impl eframe::App for KadrApp {
                         ctx.load_texture("preload_image", color_img, egui::TextureOptions::LINEAR);
                     self.preload_texture = Some(tex);
                 }
+            }
+        }
+
+        // Poll background rotate/flip result
+        let transform_result = self.transform_result.lock().unwrap().take();
+        if let Some(res) = transform_result {
+            match res {
+                Ok(index) => {
+                    self.thumb_textures.pop(&index);
+                    self.current_texture = None;
+                    self.load_current_image();
+                    if !self.entries.is_empty() {
+                        let next = (self.current_index + 1) % self.entries.len();
+                        self.start_preload(next);
+                    }
+                    self.set_status("Saved.");
+                }
+                Err(e) => self.set_status(format!("Save failed: {e}")),
             }
         }
 
@@ -1025,17 +1075,17 @@ impl eframe::App for KadrApp {
                     }
 
                     let clicked_idx = {
-                        let thumb_entries: Vec<ThumbEntry<'_>> = self
-                            .entries
-                            .iter()
-                            .enumerate()
-                            .map(|(i, e)| ThumbEntry {
+                        let thumb_entries: Vec<ThumbEntry<'_>> = (start..end)
+                            .map(|i| ThumbEntry {
                                 texture: self.thumb_textures.peek(&i),
-                                label: &e.file_name,
-                                is_video: e.media_type == MediaType::Video,
+                                label: &self.entries[i].file_name,
+                                is_video: self.entries[i].media_type == MediaType::Video,
                             })
                             .collect();
-                        strip.show(ui, &thumb_entries, current_index).clicked_index
+                        let relative_current = current_index - start;
+                        strip.show(ui, &thumb_entries, relative_current)
+                            .clicked_index
+                            .map(|i| i + start)
                     };
 
                     if let Some(idx) = clicked_idx {
