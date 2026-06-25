@@ -19,7 +19,7 @@ eframe = { version = "0.35", default-features = false, features = [
   "persistence",
 ] }
 egui = "0.35"
-egui_extras = { version = "0.34", features = ["image"] }
+egui_extras = { version = "0.35", features = ["image"] }
 image = { version = "0.25", features = [
   "jpeg",
   "png",
