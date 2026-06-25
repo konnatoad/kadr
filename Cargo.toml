@@ -18,7 +18,7 @@ eframe = { version = "0.35", default-features = false, features = [
   "glow",
   "persistence",
 ] }
-egui = "0.34"
+egui = "0.35"
 egui_extras = { version = "0.34", features = ["image"] }
 image = { version = "0.25", features = [
   "jpeg",
