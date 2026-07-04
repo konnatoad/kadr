@@ -1,7 +1,8 @@
-use egui::{Color32, Key, RichText, Stroke, Ui};
+use egui::{Color32, Key, RichText, StrokeKind, Ui};
 
 use crate::fs::sorter::SortMode;
 use crate::keybinds::{KeyAction, KeyBinding, KeyBindings, SerializableKey};
+use crate::ui::widgets::{self, theme};
 
 pub struct SettingsDialog {
     pub open: bool,
@@ -99,10 +100,18 @@ impl SettingsDialog {
                 // ── Tab bar ──────────────────────────────────────────────
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
-                    tab_btn(ui, "General",    self.tab == SettingsTab::General,    || self.tab = SettingsTab::General);
-                    tab_btn(ui, "Appearance", self.tab == SettingsTab::Appearance, || self.tab = SettingsTab::Appearance);
-                    tab_btn(ui, "Keybinds",   self.tab == SettingsTab::Keybinds,   || self.tab = SettingsTab::Keybinds);
-                    tab_btn(ui, "Slideshow",  self.tab == SettingsTab::Slideshow,  || self.tab = SettingsTab::Slideshow);
+                    if widgets::tab_button(ui, "General",    self.tab == SettingsTab::General).clicked() {
+                        self.tab = SettingsTab::General;
+                    }
+                    if widgets::tab_button(ui, "Appearance", self.tab == SettingsTab::Appearance).clicked() {
+                        self.tab = SettingsTab::Appearance;
+                    }
+                    if widgets::tab_button(ui, "Keybinds",   self.tab == SettingsTab::Keybinds).clicked() {
+                        self.tab = SettingsTab::Keybinds;
+                    }
+                    if widgets::tab_button(ui, "Slideshow",  self.tab == SettingsTab::Slideshow).clicked() {
+                        self.tab = SettingsTab::Slideshow;
+                    }
                 });
                 ui.add_space(2.0);
                 ui.separator();
@@ -127,8 +136,8 @@ impl SettingsDialog {
                 ui.separator();
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked()  { action = SettingsAction::Save; }
-                    if ui.button("Close").clicked() { action = SettingsAction::Close; }
+                    if widgets::accent_button(ui, "Save").clicked() { action = SettingsAction::Save; }
+                    if ui.button("Close").clicked()                 { action = SettingsAction::Close; }
                 });
             });
 
@@ -136,9 +145,17 @@ impl SettingsDialog {
             action = SettingsAction::Close;
         }
 
-        // Capture rebind key press
+        // Capture rebind key press, or close the whole dialog via Escape when
+        // not in the middle of capturing a keybind.
         if self.rebinding.is_some() {
             ctx.input(|input| {
+                // Escape always cancels — must be checked before the capture
+                // loop below, since Key::Escape is itself one of the
+                // candidate keys `all_known_keys()` offers to bind.
+                if input.key_pressed(Key::Escape) {
+                    self.rebinding = None;
+                    return;
+                }
                 for key in all_known_keys() {
                     if input.key_pressed(key) {
                         if let Some(sk) = key_to_serializable(key) {
@@ -156,10 +173,9 @@ impl SettingsDialog {
                         }
                     }
                 }
-                if input.key_pressed(Key::Escape) {
-                    self.rebinding = None;
-                }
             });
+        } else if ctx.input(|input| input.key_pressed(Key::Escape)) {
+            action = SettingsAction::Close;
         }
 
         action
@@ -171,7 +187,7 @@ impl SettingsDialog {
             self.monitors = crate::monitor::enumerate();
         }
 
-        section_label(ui, "Display");
+        widgets::section_label(ui, "Display");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Open on:");
@@ -186,7 +202,7 @@ impl SettingsDialog {
             };
             egui::ComboBox::from_id_salt("settings_monitor")
                 .selected_text(current_label)
-                .width(260.0)
+                .width(ui.available_width().min(340.0))
                 .show_ui(ui, |ui| {
                     if ui.selectable_label(self.preferred_monitor == 0, "Auto (OS default)").clicked() {
                         self.preferred_monitor = 0;
@@ -202,30 +218,30 @@ impl SettingsDialog {
         ui.add_space(2.0);
         ui.label(
             RichText::new("Takes effect on next launch.")
-                .color(Color32::from_gray(90))
+                .color(theme::TEXT_MUTED)
                 .size(11.0),
         );
 
         ui.add_space(12.0);
-        section_label(ui, "View");
+        widgets::section_label(ui, "View");
         ui.add_space(4.0);
         ui.checkbox(&mut self.show_thumbnails, "Show thumbnail strip");
         ui.add_space(2.0);
         ui.checkbox(&mut self.scan_subfolders, "Scan subfolders");
 
         ui.add_space(12.0);
-        section_label(ui, "Filter");
+        widgets::section_label(ui, "Filter");
         ui.add_space(4.0);
         ui.checkbox(&mut self.filter_images, "Show images");
         ui.add_space(2.0);
         ui.checkbox(&mut self.filter_videos, "Show videos");
 
         ui.add_space(12.0);
-        section_label(ui, "Sort");
+        widgets::section_label(ui, "Sort");
         ui.add_space(6.0);
         egui::ComboBox::from_id_salt("settings_sort")
             .selected_text(self.sort_mode.label())
-            .width(200.0)
+            .width(ui.available_width().min(280.0))
             .show_ui(ui, |ui| {
                 for mode in SortMode::all() {
                     if ui.selectable_label(&self.sort_mode == mode, mode.label()).clicked() {
@@ -235,29 +251,47 @@ impl SettingsDialog {
             });
 
         ui.add_space(12.0);
-        section_label(ui, "Session");
+        widgets::section_label(ui, "Session");
         ui.add_space(4.0);
         ui.checkbox(&mut self.remember_last_folder,
             "Reopen last folder on startup");
         ui.add_space(2.0);
         ui.label(
             RichText::new("When off, kadr starts with an empty window every time.")
-                .color(Color32::from_gray(100))
+                .color(theme::TEXT_MUTED)
                 .size(11.5),
         );
     }
 
     fn show_appearance(&mut self, ui: &mut Ui) {
-        section_label(ui, "Viewer");
+        widgets::section_label(ui, "Viewer");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Background color:");
             ui.add_space(8.0);
             ui.color_edit_button_rgb(&mut self.bg_color);
+            ui.add_space(8.0);
+
+            // Larger live preview swatch — the color button itself is small,
+            // this makes it obvious at a glance what the viewer background
+            // will look like.
+            let preview = Color32::from_rgb(
+                (self.bg_color[0] * 255.0).round() as u8,
+                (self.bg_color[1] * 255.0).round() as u8,
+                (self.bg_color[2] * 255.0).round() as u8,
+            );
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 22.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, theme::RADIUS_SM, preview);
+            ui.painter().rect_stroke(
+                rect,
+                theme::RADIUS_SM,
+                egui::Stroke::new(1.0, theme::BORDER),
+                StrokeKind::Outside,
+            );
         });
 
         ui.add_space(12.0);
-        section_label(ui, "Thumbnails");
+        widgets::section_label(ui, "Thumbnails");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Size:");
@@ -269,38 +303,46 @@ impl SettingsDialog {
     fn show_keybinds(&mut self, ui: &mut Ui, bindings: &mut KeyBindings) {
         if self.rebinding.is_some() {
             ui.colored_label(
-                Color32::from_rgb(255, 200, 50),
+                theme::WARNING,
                 "Press any key combination to assign  (Escape to cancel)",
             );
             ui.add_space(6.0);
         }
 
-        for action in KeyAction::all() {
-            let binding_text = bindings
-                .get(&action)
-                .map(|b| b.display())
-                .unwrap_or_else(|| "unbound".to_string());
+        for (i, (group_name, actions)) in keybind_groups().iter().enumerate() {
+            if i > 0 {
+                ui.add_space(10.0);
+            }
+            widgets::section_label(ui, group_name);
+            ui.add_space(4.0);
 
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(action.label()).size(13.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let is_rebinding = self.rebinding.as_ref() == Some(&action);
-                    let btn_label = if is_rebinding {
-                        RichText::new("listening…").color(Color32::from_rgb(255, 200, 50))
-                    } else {
-                        RichText::new(&binding_text).color(Color32::from_gray(160))
-                    };
-                    if ui.button(btn_label).clicked() && !is_rebinding {
-                        self.rebinding = Some(action.clone());
-                    }
+            for action in actions {
+                let binding_text = bindings
+                    .get(action)
+                    .map(|b| b.display())
+                    .unwrap_or_else(|| "unbound".to_string());
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(action.label()).size(13.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let is_rebinding = self.rebinding.as_ref() == Some(action);
+                        let btn_label = if is_rebinding {
+                            RichText::new("listening…").color(theme::WARNING)
+                        } else {
+                            RichText::new(&binding_text).color(theme::TEXT_DIM)
+                        };
+                        if ui.button(btn_label).clicked() && !is_rebinding {
+                            self.rebinding = Some(action.clone());
+                        }
+                    });
                 });
-            });
-            ui.add(egui::Separator::default().spacing(2.0));
+                ui.add(egui::Separator::default().spacing(2.0));
+            }
         }
     }
 
     fn show_slideshow(&mut self, ui: &mut Ui) {
-        section_label(ui, "Playback");
+        widgets::section_label(ui, "Playback");
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label("Interval:");
@@ -325,43 +367,33 @@ impl SettingsDialog {
         ui.checkbox(&mut self.slideshow_random, "Random order");
 
         ui.add_space(14.0);
-        section_label(ui, "Lua Script");
+        widgets::section_label(ui, "Lua Script");
         ui.add_space(6.0);
 
         // Lua error (from last compilation attempt)
         if let Some(err) = &self.lua_error {
-            egui::Frame::default()
-                .fill(Color32::from_rgba_premultiplied(200, 60, 60, 30))
-                .inner_margin(egui::Margin::symmetric(8i8, 5i8))
-                .show(ui, |ui| {
-                    ui.colored_label(Color32::from_rgb(255, 120, 110), err);
-                });
+            widgets::error_banner(ui, err);
             ui.add_space(6.0);
         }
 
         // Script status line
         let script_status = if self.lua_code.trim().is_empty() {
-            RichText::new("No script set").color(Color32::from_gray(100)).size(12.5)
+            RichText::new("No script set").color(theme::TEXT_MUTED).size(12.5)
         } else {
             let line_count = self.lua_code.lines().count();
-            RichText::new(format!("{line_count} lines")).color(Color32::from_gray(160)).size(12.5)
+            RichText::new(format!("{line_count} lines")).color(theme::TEXT_DIM).size(12.5)
         };
         ui.horizontal(|ui| {
             ui.label(script_status);
             ui.add_space(8.0);
 
-            let btn = egui::Button::new(
-                RichText::new("Edit Lua Script").size(12.5).color(Color32::from_rgb(145, 190, 255)),
-            )
-            .fill(Color32::from_rgba_premultiplied(99, 155, 255, 30))
-            .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 130)));
-            if ui.add(btn).clicked() {
+            if widgets::accent_button_sized(ui, "Edit Lua Script", 12.5, 30, 130).clicked() {
                 self.open_lua_editor = true;
             }
 
             if !self.lua_code.trim().is_empty() {
                 ui.add_space(4.0);
-                if ui.button(RichText::new("Clear").color(Color32::from_gray(140)).size(12.0)).clicked() {
+                if ui.button(RichText::new("Clear").color(theme::TEXT_DIM).size(12.0)).clicked() {
                     self.lua_code.clear();
                     self.lua_error = None;
                 }
@@ -374,35 +406,48 @@ impl SettingsDialog {
                 "The script runs callbacks during slideshow playback.\n\
                  on_interval(ctx) can return { zoom_target } to animate zoom."
             )
-            .color(Color32::from_gray(95))
+            .color(theme::TEXT_MUTED)
             .size(11.5),
         );
     }
 }
 
-fn section_label(ui: &mut Ui, text: &str) {
-    ui.label(
-        RichText::new(text)
-            .size(11.5)
-            .color(Color32::from_gray(130))
-            .strong(),
-    );
-}
-
-fn tab_btn(ui: &mut Ui, label: &str, active: bool, mut on_click: impl FnMut()) {
-    let (bg, text_col, stroke) = if active {
-        (
-            Color32::from_rgba_premultiplied(99, 155, 255, 38),
-            Color32::from_rgb(145, 190, 255),
-            egui::Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 160)),
-        )
-    } else {
-        (Color32::TRANSPARENT, Color32::from_gray(150), egui::Stroke::NONE)
-    };
-    let btn = egui::Button::new(RichText::new(label).size(13.0).color(text_col))
-        .fill(bg)
-        .stroke(stroke);
-    if ui.add(btn).clicked() { on_click(); }
+/// Groups `KeyAction::all()` under scannable headings for the Keybinds tab,
+/// instead of one long flat list.
+fn keybind_groups() -> Vec<(&'static str, Vec<KeyAction>)> {
+    vec![
+        ("Navigation", vec![
+            KeyAction::NextImage,
+            KeyAction::PrevImage,
+            KeyAction::ToggleZoom,
+            KeyAction::ZoomIn,
+            KeyAction::ZoomOut,
+            KeyAction::ZoomReset,
+            KeyAction::PanUp,
+            KeyAction::PanDown,
+            KeyAction::PanLeft,
+            KeyAction::PanRight,
+        ]),
+        ("View", vec![
+            KeyAction::Fullscreen,
+            KeyAction::ToggleThumbnails,
+            KeyAction::RotateCW,
+            KeyAction::RotateCCW,
+            KeyAction::FlipHorizontal,
+            KeyAction::FlipVertical,
+        ]),
+        ("File", vec![
+            KeyAction::OpenFolder,
+            KeyAction::OpenFile,
+            KeyAction::CombineFolders,
+            KeyAction::DeleteFile,
+        ]),
+        ("Other", vec![
+            KeyAction::ToggleSlideshow,
+            KeyAction::OpenSettings,
+            KeyAction::Quit,
+        ]),
+    ]
 }
 
 fn all_known_keys() -> Vec<Key> {

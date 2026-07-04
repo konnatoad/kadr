@@ -1,13 +1,18 @@
 use egui::{
     text::{LayoutJob, TextFormat},
-    Color32, FontId, RichText, Stroke, Ui,
+    Color32, FontId, RichText, Ui,
 };
+
+use crate::ui::widgets::{self, theme};
 
 pub struct LuaEditor {
     pub open: bool,
     pub code: String,
     pub error: Option<String>,
     show_vars: bool,
+    /// True while the "this will overwrite your script" prompt is shown in
+    /// place of a silent, irreversible "Load Example" click.
+    confirm_load_example: bool,
 }
 
 pub enum LuaEditorAction {
@@ -38,7 +43,13 @@ end
 
 impl Default for LuaEditor {
     fn default() -> Self {
-        Self { open: false, code: String::new(), error: None, show_vars: false }
+        Self {
+            open: false,
+            code: String::new(),
+            error: None,
+            show_vars: false,
+            confirm_load_example: false,
+        }
     }
 }
 
@@ -47,6 +58,7 @@ impl LuaEditor {
         self.code = code.to_owned();
         self.error = None;
         self.open  = true;
+        self.confirm_load_example = false;
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> LuaEditorAction {
@@ -68,31 +80,56 @@ impl LuaEditor {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Slideshow Lua Script")
-                            .color(Color32::from_gray(180))
+                            .color(theme::TEXT)
                             .size(13.0),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(
-                            egui::Button::new(
-                                RichText::new("Load Example").size(12.0).color(Color32::from_rgb(145, 190, 255))
-                            )
-                            .fill(Color32::from_rgba_premultiplied(99, 155, 255, 28))
-                            .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 120))),
-                        ).clicked() {
-                            self.code = EXAMPLE_SCRIPT.to_owned();
-                            self.error = None;
+                        if widgets::accent_button_sized(ui, "Load Example", 12.0, 28, 120).clicked() {
+                            if self.code.trim().is_empty() {
+                                self.code = EXAMPLE_SCRIPT.to_owned();
+                                self.error = None;
+                            } else {
+                                self.confirm_load_example = true;
+                            }
                         }
                         ui.add_space(6.0);
                         let vars_label = if self.show_vars { "▲ Variables" } else { "▼ Variables" };
                         if ui.add(
-                            egui::Button::new(RichText::new(vars_label).size(12.0).color(Color32::from_gray(200)))
-                                .fill(Color32::from_rgba_premultiplied(255, 255, 255, 12))
-                                .stroke(Stroke::new(1.0, Color32::from_gray(60))),
+                            egui::Button::new(RichText::new(vars_label).size(12.0).color(theme::TEXT))
+                                .fill(theme::white_wash(12))
+                                .stroke(egui::Stroke::new(1.0, theme::BORDER)),
                         ).clicked() {
                             self.show_vars = !self.show_vars;
                         }
                     });
                 });
+
+                // ── Overwrite-confirmation banner ────────────────────────
+                if self.confirm_load_example {
+                    ui.add_space(6.0);
+                    egui::Frame::default()
+                        .fill(theme::warning_fill(20))
+                        .corner_radius(theme::RADIUS_SM)
+                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
+                        .show(ui, |ui| {
+                            ui.colored_label(
+                                theme::WARNING,
+                                "Replace the current script with the example? This overwrites your code.",
+                            );
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if widgets::accent_button_sized(ui, "Load anyway", 12.0, 34, 140).clicked() {
+                                    self.code = EXAMPLE_SCRIPT.to_owned();
+                                    self.error = None;
+                                    self.confirm_load_example = false;
+                                }
+                                ui.add_space(4.0);
+                                if ui.button("Cancel").clicked() {
+                                    self.confirm_load_example = false;
+                                }
+                            });
+                        });
+                }
 
                 ui.add_space(4.0);
                 ui.separator();
@@ -101,25 +138,26 @@ impl LuaEditor {
                 // ── Variable reference panel ─────────────────────────────
                 if self.show_vars {
                     egui::Frame::new()
-                        .fill(Color32::from_rgba_premultiplied(18, 18, 26, 255))
-                        .stroke(Stroke::new(1.0, Color32::from_gray(40)))
+                        .fill(theme::SURFACE2)
+                        .corner_radius(theme::RADIUS_SM)
+                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
                         .inner_margin(egui::Margin::symmetric(10i8, 8i8))
                         .show(ui, |ui| {
                             ui.columns(2, |cols| {
                                 // Left column: ctx.* inputs
                                 let ui = &mut cols[0];
-                                ui.label(RichText::new("ctx.*  (read-only inputs)").size(11.0).color(Color32::from_gray(110)));
+                                ui.label(RichText::new("ctx.*  (read-only inputs)").size(11.0).color(theme::TEXT_MUTED));
                                 ui.add_space(4.0);
-                                for (name, typ, desc) in CTX_FIELDS {
-                                    var_row(ui, name, typ, desc);
+                                for (i, &(name, typ, desc)) in CTX_FIELDS.iter().enumerate() {
+                                    var_row(ui, i, name, typ, desc);
                                 }
 
                                 // Right column: return value fields
                                 let ui = &mut cols[1];
-                                ui.label(RichText::new("return { … }  (output fields)").size(11.0).color(Color32::from_gray(110)));
+                                ui.label(RichText::new("return { … }  (output fields)").size(11.0).color(theme::TEXT_MUTED));
                                 ui.add_space(4.0);
-                                for (name, typ, desc) in RETURN_FIELDS {
-                                    var_row(ui, name, typ, desc);
+                                for (i, &(name, typ, desc)) in RETURN_FIELDS.iter().enumerate() {
+                                    var_row(ui, i, name, typ, desc);
                                 }
                             });
                         });
@@ -128,12 +166,7 @@ impl LuaEditor {
 
                 // ── Error banner ────────────────────────────────────────
                 if let Some(err) = &self.error {
-                    egui::Frame::default()
-                        .fill(Color32::from_rgba_premultiplied(200, 60, 60, 35))
-                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
-                        .show(ui, |ui| {
-                            ui.colored_label(Color32::from_rgb(255, 120, 110), err);
-                        });
+                    widgets::error_banner(ui, err);
                     ui.add_space(4.0);
                 }
 
@@ -166,12 +199,7 @@ impl LuaEditor {
                 ui.separator();
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let save_btn = egui::Button::new(
-                        RichText::new("Save").color(Color32::from_rgb(145, 190, 255)),
-                    )
-                    .fill(Color32::from_rgba_premultiplied(99, 155, 255, 38))
-                    .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 160)));
-                    if ui.add(save_btn).clicked() {
+                    if widgets::accent_button(ui, "Save").clicked() {
                         action = LuaEditorAction::Saved(self.code.clone());
                     }
                     if ui.button("Cancel").clicked() {
@@ -181,7 +209,7 @@ impl LuaEditor {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new("on_advance(ctx)  ·  on_interval(ctx)  — click ▼ Variables for field list")
-                                .color(Color32::from_gray(85))
+                                .color(theme::TEXT_MUTED)
                                 .size(11.0),
                         );
                     });
@@ -218,12 +246,24 @@ static RETURN_FIELDS: &[(&str, &str, &str)] = &[
     ("new_interval", "number",  "change the slide interval (seconds)"),
 ];
 
-fn var_row(ui: &mut egui::Ui, name: &str, typ: &str, desc: &str) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(name).monospace().size(12.0).color(Color32::from_rgb(130, 185, 255)));
-        ui.label(RichText::new(typ).size(11.0).color(Color32::from_gray(80)));
-        ui.label(RichText::new(desc).size(11.0).color(Color32::from_gray(130)));
-    });
+fn var_row(ui: &mut egui::Ui, index: usize, name: &str, typ: &str, desc: &str) {
+    // Alternating row shading makes the two-column reference easier to scan.
+    let bg = if index % 2 == 1 {
+        theme::white_wash(6)
+    } else {
+        Color32::TRANSPARENT
+    };
+    egui::Frame::default()
+        .fill(bg)
+        .inner_margin(egui::Margin::symmetric(4i8, 2i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(name).monospace().size(12.0).color(theme::ACCENT_TEXT));
+                ui.label(RichText::new(typ).size(11.0).color(theme::TEXT_MUTED));
+                ui.label(RichText::new(desc).size(11.0).color(theme::TEXT_DIM));
+            });
+        });
 }
 
 // ── Syntax highlighting ──────────────────────────────────────────────────────
@@ -231,12 +271,13 @@ fn var_row(ui: &mut egui::Ui, name: &str, typ: &str, desc: &str) {
 fn lua_highlight(text: &str) -> LayoutJob {
     let mut job = LayoutJob::default();
 
-    let kw  = Color32::from_rgb(130, 175, 255); // keywords
-    let bi  = Color32::from_rgb(95,  200, 195); // builtins
-    let str_c = Color32::from_rgb(195, 160,  90); // strings
-    let num = Color32::from_rgb(220, 150,  80); // numbers
-    let cmt = Color32::from_rgb(100, 140, 100); // comments
-    let def = Color32::from_rgb(210, 210, 215); // default
+    // Matches Tokyo Night's own editor syntax-highlighting convention.
+    let kw  = theme::ACCENT2;      // keywords — purple
+    let bi  = theme::ACCENT;       // builtins — blue
+    let str_c = theme::SUCCESS;    // strings — green
+    let num = theme::ORANGE;       // numbers — orange
+    let cmt = theme::TEXT_MUTED;   // comments
+    let def = theme::TEXT;         // default
 
     let font = FontId::monospace(13.0);
 

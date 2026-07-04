@@ -1,4 +1,8 @@
-use egui::{pos2, Color32, Pos2, Rect, Sense, TextureHandle, Ui, Vec2};
+use std::time::{Duration, Instant};
+
+use egui::{pos2, Color32, CursorIcon, Pos2, Rect, Sense, TextureHandle, Ui, Vec2};
+
+use crate::ui::widgets::theme;
 
 pub struct ViewerState {
     pub zoom: f32,
@@ -9,6 +13,11 @@ pub struct ViewerState {
     pub lua_pan: Vec2,
     /// Lua-controlled opacity [0.0 = transparent, 1.0 = opaque].
     pub lua_opacity: f32,
+    /// Zoom value last seen by `show_viewer`, used to detect changes that
+    /// should (re-)trigger the transient "150%" indicator.
+    last_seen_zoom: f32,
+    /// While `Some` and not yet elapsed, the zoom-percentage indicator is drawn.
+    zoom_indicator_until: Option<Instant>,
 }
 
 impl Default for ViewerState {
@@ -20,6 +29,8 @@ impl Default for ViewerState {
             drag_start: None,
             lua_pan: Vec2::ZERO,
             lua_opacity: 1.0,
+            last_seen_zoom: 1.0,
+            zoom_indicator_until: None,
         }
     }
 }
@@ -162,11 +173,21 @@ pub fn show_viewer(
     let alpha = (state.lua_opacity.clamp(0.0, 1.0) * transition_t * 255.0) as u8;
     ui.painter().image(texture.id(), img_rect, uv, Color32::from_white_alpha(alpha));
 
+    // `smooth_scroll_delta` is egui's momentum-smoothed wheel delta: after a
+    // single physical wheel notch it stays nonzero across many subsequent
+    // frames while it decays toward zero. Scaling the zoom factor by the
+    // delta's *magnitude* (exp-based, matching egui's own scroll-zoom
+    // convention) means the total zoom applied depends on how far you
+    // actually scrolled, not on how many frames the decay happened to span —
+    // a fixed per-frame multiplier here previously compounded every single
+    // one of those decay frames and could run zoom up to its 32x clamp from
+    // one wheel click.
     let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-    if interact.hovered() && scroll_delta != 0.0 {
+    if interact.hovered() && scroll_delta.abs() > f32::EPSILON {
         let pointer_pos = ui.input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
         let anchor = pointer_pos - rect.center() - state.offset;
-        let factor = if scroll_delta > 0.0 { 1.1 } else { 1.0 / 1.1 };
+        const ZOOM_SENSITIVITY: f32 = 0.002;
+        let factor = (scroll_delta * ZOOM_SENSITIVITY).exp();
         state.zoom_by(factor, Some(anchor), image_size);
         state.clamp_offset(image_size, available);
     }
@@ -177,18 +198,63 @@ pub fn show_viewer(
             state.offset,
         ));
     }
-    if interact.dragged_by(egui::PointerButton::Primary) {
-        if state.is_overflowing(image_size, available) {
-            state.offset += interact.drag_delta();
-            state.clamp_offset(image_size, available);
-        }
+    let overflowing = state.is_overflowing(image_size, available);
+    let dragging = interact.dragged_by(egui::PointerButton::Primary);
+    if dragging && overflowing {
+        state.offset += interact.drag_delta();
+        state.clamp_offset(image_size, available);
     }
     if interact.drag_stopped() {
         state.drag_start = None;
     }
 
-    response.overflowing = state.is_overflowing(image_size, available);
+    // Cursor feedback: only signal "grabbable" when there's actually
+    // somewhere to pan to (zoomed in past the viewport).
+    if overflowing {
+        if dragging {
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        } else if interact.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+        }
+    }
+
+    draw_zoom_indicator(ui, rect, state);
+
+    response.overflowing = overflowing;
     response
+}
+
+/// Transient "150%"-style pill shown briefly whenever the zoom level changes,
+/// so the current scale reads at a glance without a persistent on-screen HUD.
+fn draw_zoom_indicator(ui: &mut Ui, rect: Rect, state: &mut ViewerState) {
+    if state.fit_mode {
+        // Auto-fit recalculates zoom per-image (different aspect ratios), which
+        // isn't a user zoom action — stay silent and just keep this in sync so
+        // leaving fit mode later diffs against the right baseline.
+        state.last_seen_zoom = state.zoom;
+    } else if (state.zoom - state.last_seen_zoom).abs() > 0.0005 {
+        state.last_seen_zoom = state.zoom;
+        state.zoom_indicator_until = Some(Instant::now() + Duration::from_millis(900));
+    }
+
+    let Some(until) = state.zoom_indicator_until else { return };
+    let now = Instant::now();
+    if now >= until {
+        state.zoom_indicator_until = None;
+        return;
+    }
+
+    let pct = (state.zoom * 100.0).round() as i32;
+    let font = egui::FontId::proportional(13.0);
+    let galley = ui.painter().layout_no_wrap(format!("{pct}%"), font, theme::ACCENT_TEXT);
+
+    let pad = Vec2::new(8.0, 4.0);
+    let pos = rect.left_top() + Vec2::new(12.0, 12.0);
+    let bg_rect = Rect::from_min_size(pos, galley.size() + pad * 2.0);
+    ui.painter().rect_filled(bg_rect, 5.0, theme::overlay_bg());
+    ui.painter().galley(bg_rect.min + pad, galley, theme::ACCENT_TEXT);
+
+    ui.ctx().request_repaint_after(until - now);
 }
 
 #[derive(Default)]
