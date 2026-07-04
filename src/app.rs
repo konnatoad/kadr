@@ -28,9 +28,17 @@ use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
 use crate::ui::toolbar::show_toolbar;
 use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
 use crate::ui::video_controls::{ControlsAction, show_video_controls};
+use crate::ui::widgets::theme;
 use crate::video::VideoContext;
 
 const THUMB_CACHE_LIMIT: usize = 200;
+
+// Vertical gutter above/below the floating thumbnail-strip card — kept as
+// constants so the panel's `.exact_size(..)` and the overlay text's
+// `thumb_offset` calculation (which needs to sit above the card) can't drift
+// out of sync with each other.
+const THUMB_PANEL_MARGIN_TOP: f32 = 8.0;
+const THUMB_PANEL_MARGIN_BOTTOM: f32 = 10.0;
 
 pub struct KadrApp {
     config: AppConfig,
@@ -59,7 +67,9 @@ pub struct KadrApp {
     transform_result: Arc<Mutex<Option<Result<usize, String>>>>,
     /// Stored so background threads can call `request_repaint()`.
     egui_ctx: egui::Context,
-    status_msg: Option<(String, std::time::Instant)>,
+    /// (message, shown-since, is_error) — the third field picks the toast
+    /// color (error red vs. success green) in the status overlay.
+    status_msg: Option<(String, std::time::Instant, bool)>,
     video_ctx: Option<VideoContext>,
     video_texture: Option<TextureHandle>,
     video_volume: f64,
@@ -284,7 +294,7 @@ impl KadrApp {
                     ctx.set_volume(self.video_volume);
                     self.video_ctx = Some(ctx);
                 }
-                Err(e) => self.set_status(format!("Video error: {e}")),
+                Err(e) => self.set_error_status(format!("Video error: {e}")),
             }
             return;
         }
@@ -438,7 +448,18 @@ impl KadrApp {
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_msg = Some((msg.into(), std::time::Instant::now()));
+        self.status_msg = Some((msg.into(), std::time::Instant::now(), false));
+    }
+
+    fn set_error_status(&mut self, msg: impl Into<String>) {
+        self.status_msg = Some((msg.into(), std::time::Instant::now(), true));
+    }
+
+    /// Total height of the floating thumbnail-strip panel, including its
+    /// top/bottom gutter — used both to size the panel itself and to place
+    /// overlay text above it without the two drifting out of sync.
+    fn thumb_panel_height(&self) -> f32 {
+        self.config.thumbnail_size + 10.0 + THUMB_PANEL_MARGIN_TOP + THUMB_PANEL_MARGIN_BOTTOM
     }
 
     fn bg_color32(&self) -> Color32 {
@@ -787,7 +808,7 @@ impl eframe::App for KadrApp {
                         self.start_preload(next);
                     }
                 } else if let Some(err) = result.error {
-                    self.set_status(format!("Error: {err}"));
+                    self.set_error_status(format!("Error: {err}"));
                 }
             }
         }
@@ -818,7 +839,7 @@ impl eframe::App for KadrApp {
                     }
                     self.set_status("Saved.");
                 }
-                Err(e) => self.set_status(format!("Save failed: {e}")),
+                Err(e) => self.set_error_status(format!("Save failed: {e}")),
             }
         }
 
@@ -997,7 +1018,14 @@ impl eframe::App for KadrApp {
             } // end !is_video
         }
 
-        egui::Panel::top("toolbar").show_inside(ui, |ui| {
+        egui::Panel::top("toolbar")
+            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: 10,
+                bottom: 8,
+            }))
+            .show_inside(ui, |ui| {
             let sort_mode = self.config.viewer.sort_mode.clone();
             let toolbar_resp = show_toolbar(
                 ui,
@@ -1060,8 +1088,14 @@ impl eframe::App for KadrApp {
             let current_index = self.current_index;
 
             egui::Panel::bottom("thumbnails")
-                .exact_size(thumb_height)
+                .exact_size(self.thumb_panel_height())
                 .resizable(false)
+                .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+                    left: 14,
+                    right: 14,
+                    top: THUMB_PANEL_MARGIN_TOP as i8,
+                    bottom: THUMB_PANEL_MARGIN_BOTTOM as i8,
+                }))
                 .show_inside(ui, |ui| {
                     let strip = ThumbnailStrip {
                         thumb_size,
@@ -1095,7 +1129,12 @@ impl eframe::App for KadrApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(bg))
+            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
+                left: 14,
+                right: 14,
+                top: 0,
+                bottom: 8,
+            }))
             .show_inside(ui, |ui| {
                 if self.entries.is_empty() {
                     ui.centered_and_justified(|ui| {
@@ -1103,7 +1142,7 @@ impl eframe::App for KadrApp {
                             egui::RichText::new(
                                 "Open a folder or file to get started\n\nDrag & drop also works",
                             )
-                            .color(Color32::from_gray(120))
+                            .color(theme::TEXT_DIM)
                             .size(18.0),
                         );
                     });
@@ -1202,50 +1241,49 @@ impl eframe::App for KadrApp {
                 let file_name = self.entries[self.current_index].file_name.clone();
                 let screen = ctx.viewport_rect();
                 let thumb_offset = if self.config.show_thumbnails {
-                    self.config.thumbnail_size + 24.0
+                    self.thumb_panel_height() + 14.0
                 } else {
                     24.0
                 };
                 {
                     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("overlay")));
                     let font_id = egui::FontId::proportional(13.0);
-                    let text_color = Color32::from_rgba_premultiplied(230, 230, 235, 220);
                     // Approximate pill width (avg ~7px per char at 13pt)
                     let approx_w = (file_name.chars().count() as f32 * 7.2).max(60.0);
                     let text_h = 16.0_f32;
-                    let x0 = 12.0_f32;
+                    // 14px matches the CentralPanel's left inner_margin (the
+                    // viewer canvas gutter) + a little inner padding, so the
+                    // pill lines up with the canvas edge rather than the gutter.
+                    let x0 = 24.0_f32;
                     let y_bottom = screen.bottom() - thumb_offset - 8.0;
                     let pill_rect = egui::Rect::from_min_size(
                         egui::pos2(x0, y_bottom - text_h - 2.0),
                         egui::vec2(approx_w + 16.0, text_h + 6.0),
                     );
-                    painter.rect_filled(
-                        pill_rect,
-                        egui::CornerRadius::same(8),
-                        Color32::from_rgba_premultiplied(0, 0, 0, 155),
-                    );
+                    painter.rect_filled(pill_rect, egui::CornerRadius::same(8), theme::overlay_bg());
                     painter.text(
                         egui::pos2(x0 + 8.0, y_bottom),
                         egui::Align2::LEFT_BOTTOM,
                         &file_name,
                         font_id,
-                        text_color,
+                        theme::TEXT,
                     );
                 }
 
                 // Status overlay — check elapsed before borrowing mutably
                 let should_clear = match &self.status_msg {
-                    Some((msg, since)) if since.elapsed().as_secs_f32() < 2.0 => {
+                    Some((msg, since, is_error)) if since.elapsed().as_secs_f32() < 2.0 => {
+                        let color = if *is_error { theme::ERROR_TEXT } else { theme::SUCCESS };
                         ctx.layer_painter(egui::LayerId::new(
                             egui::Order::Foreground,
                             egui::Id::new("status_overlay"),
                         ))
                         .text(
-                            egui::pos2(12.0, screen.bottom() - thumb_offset - 20.0),
+                            egui::pos2(24.0, screen.bottom() - thumb_offset - 20.0),
                             egui::Align2::LEFT_BOTTOM,
                             msg.as_str(),
                             egui::FontId::proportional(13.0),
-                            Color32::from_rgb(100, 220, 100),
+                            color,
                         );
                         ctx.request_repaint();
                         false
@@ -1396,7 +1434,7 @@ impl eframe::App for KadrApp {
 
                 if matches!(settings_action, SettingsAction::Save) {
                     if let Err(e) = self.config.save() {
-                        self.set_status(format!("Save failed: {e}"));
+                        self.set_error_status(format!("Save failed: {e}"));
                     } else {
                         self.set_status("Settings saved.");
                     }
@@ -1439,53 +1477,54 @@ fn apply_lua_cmd(
 }
 
 fn apply_theme(ctx: &egui::Context) {
-    // Slightly blue-tinted darks — more character than pure gray
-    let bg = Color32::from_rgb(10, 10, 13);
-    let surface = Color32::from_rgb(16, 16, 20);
-    let surface2 = Color32::from_rgb(22, 22, 28);
-    let surface3 = Color32::from_rgb(33, 33, 42);
-    let surface4 = Color32::from_rgb(48, 48, 60);
-    let accent = Color32::from_rgb(99, 155, 255);
-    let text = Color32::from_rgb(222, 222, 228);
-    let dim = Color32::from_rgb(105, 105, 120);
-    let radius = egui::CornerRadius::same(7);
+    // Tokyo Night: deep navy background, blue/purple accents. See
+    // `crate::ui::widgets::theme` for the full palette — these are the same
+    // constants, just wired into egui's global widget visuals here.
+    let bg = theme::BG;
+    let surface = theme::SURFACE;
+    let surface2 = theme::SURFACE2;
+    let surface3 = theme::SURFACE3;
+    let surface4 = theme::SURFACE4;
+    let accent = theme::ACCENT;
+    let text = theme::TEXT;
+    let dim = theme::TEXT_DIM;
+    let radius = egui::CornerRadius::same(theme::RADIUS_SM as u8);
     let none = egui::Stroke::NONE;
 
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = surface;
+    visuals.panel_fill = bg;
     visuals.window_fill = surface2;
     visuals.faint_bg_color = bg;
     visuals.extreme_bg_color = bg;
     visuals.override_text_color = Some(text);
-    visuals.window_corner_radius = egui::CornerRadius::same(10);
+    visuals.window_corner_radius = egui::CornerRadius::same(theme::RADIUS as u8);
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow::NONE;
 
-    visuals.selection.bg_fill = Color32::from_rgba_premultiplied(99, 155, 255, 55);
+    visuals.selection.bg_fill = theme::accent_fill(60);
     visuals.selection.stroke = egui::Stroke::new(1.0, accent);
 
     visuals.hyperlink_color = accent;
 
     visuals.widgets.noninteractive.bg_fill = surface;
-    visuals.widgets.noninteractive.bg_stroke =
-        egui::Stroke::new(1.0, Color32::from_rgb(30, 30, 38));
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
     visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, dim);
     visuals.widgets.noninteractive.corner_radius = radius;
     visuals.widgets.noninteractive.expansion = 0.0;
 
-    visuals.widgets.inactive.bg_fill = surface3;
+    visuals.widgets.inactive.bg_fill = surface2;
     visuals.widgets.inactive.bg_stroke = none;
     visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
     visuals.widgets.inactive.corner_radius = radius;
     visuals.widgets.inactive.expansion = 0.0;
 
     visuals.widgets.hovered.bg_fill = surface4;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(60, 60, 80));
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, theme::BORDER);
     visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text);
     visuals.widgets.hovered.corner_radius = radius;
     visuals.widgets.hovered.expansion = 1.0;
 
-    visuals.widgets.active.bg_fill = Color32::from_rgb(50, 52, 72);
+    visuals.widgets.active.bg_fill = Color32::from_rgb(0x2b, 0x30, 0x54);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
     visuals.widgets.active.corner_radius = radius;
@@ -1500,21 +1539,21 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
-    style.spacing.button_padding = egui::vec2(11.0, 5.0);
-    style.spacing.indent = 14.0;
-    style.spacing.interact_size = egui::vec2(36.0, 27.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    style.spacing.indent = 16.0;
+    style.spacing.interact_size = egui::vec2(40.0, 30.0);
     style.text_styles.insert(
         egui::TextStyle::Body,
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        egui::FontId::new(13.5, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+        egui::FontId::new(13.5, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Small,
-        egui::FontId::new(11.0, egui::FontFamily::Proportional),
+        egui::FontId::new(11.5, egui::FontFamily::Proportional),
     );
     ctx.set_global_style(style);
 }

@@ -5,3 +5,4 @@ pub mod thumbnail_strip;
 pub mod toolbar;
 pub mod video_controls;
 pub mod viewer;
+pub mod widgets;
