@@ -1,5 +1,7 @@
 use egui::{Color32, CursorIcon, ScrollArea, Sense, TextureHandle, Ui, Vec2};
 
+use crate::ui::widgets::theme;
+
 pub struct ThumbnailStrip {
     pub height: f32,
     pub thumb_size: f32,
@@ -40,16 +42,13 @@ impl ThumbnailStrip {
             ui.cursor().min,
             Vec2::new(ui.available_width(), self.height),
         );
-        // Strip background — slightly darker than panel
-        ui.painter().rect_filled(
+        // Floating card background, matching the toolbar's treatment.
+        ui.painter().rect_filled(available_rect, theme::RADIUS, theme::SURFACE);
+        ui.painter().rect_stroke(
             available_rect,
-            0.0,
-            Color32::from_rgb(12, 12, 15),
-        );
-        // Thin accent top border
-        ui.painter().line_segment(
-            [available_rect.left_top(), available_rect.right_top()],
-            egui::Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 45)),
+            theme::RADIUS,
+            egui::Stroke::new(1.0, theme::BORDER),
+            egui::StrokeKind::Outside,
         );
 
         ui.allocate_ui(
@@ -74,25 +73,30 @@ impl ThumbnailStrip {
                                     continue;
                                 }
 
-                                // Slot background
+                                // Slot background — hover contrast bumped up from the
+                                // original 10-unit delta so it reads clearly at a glance.
                                 let slot_bg = if resp.hovered() {
-                                    Color32::from_rgb(32, 32, 42)
+                                    theme::SURFACE4
                                 } else {
-                                    Color32::from_rgb(22, 22, 28)
+                                    theme::SURFACE2
                                 };
-                                ui.painter().rect_filled(rect, 6.0, slot_bg);
+                                ui.painter().rect_filled(rect, theme::RADIUS_SM, slot_bg);
 
-                                // Selected: accent fill + border
+                                // Selected: stronger accent fill + border than before
+                                // (was a near-invisible 25-alpha fill).
                                 if is_current {
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        6.0,
-                                        Color32::from_rgba_premultiplied(99, 155, 255, 25),
-                                    );
+                                    ui.painter().rect_filled(rect, theme::RADIUS_SM, theme::accent_fill(50));
                                     ui.painter().rect_stroke(
                                         rect,
-                                        6.0,
-                                        egui::Stroke::new(2.0, Color32::from_rgb(99, 155, 255)),
+                                        theme::RADIUS_SM,
+                                        egui::Stroke::new(2.0, theme::ACCENT),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                } else if resp.hovered() {
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        theme::RADIUS_SM,
+                                        egui::Stroke::new(1.0, theme::accent_fill(70)),
                                         egui::StrokeKind::Inside,
                                     );
                                 }
@@ -119,20 +123,32 @@ impl ThumbnailStrip {
                                         ),
                                         Color32::WHITE,
                                     );
+                                } else if entry.is_video {
+                                    // Play glyph over a soft backdrop, matching the
+                                    // vector play icon used in the video controls bar.
+                                    let c = inner.center();
+                                    let s = inner.height().min(inner.width()) * 0.16;
+                                    ui.painter().circle_filled(
+                                        c,
+                                        s * 2.1,
+                                        Color32::from_rgba_premultiplied(0, 0, 0, 70),
+                                    );
+                                    ui.painter().add(egui::Shape::convex_polygon(
+                                        vec![
+                                            egui::pos2(c.x - s * 0.55 + 1.0, c.y - s),
+                                            egui::pos2(c.x - s * 0.55 + 1.0, c.y + s),
+                                            egui::pos2(c.x + s * 0.9, c.y),
+                                        ],
+                                        theme::ACCENT,
+                                        egui::Stroke::NONE,
+                                    ));
                                 } else {
-                                    // Loading / placeholder
-                                    let label = if entry.is_video { "▶" } else { "·" };
-                                    let label_color = if entry.is_video {
-                                        Color32::from_rgb(99, 155, 255)
-                                    } else {
-                                        Color32::from_gray(60)
-                                    };
-                                    ui.painter().text(
+                                    // Still loading — a plain ring instead of a stray "." glyph.
+                                    let r = inner.height().min(inner.width()) * 0.12;
+                                    ui.painter().circle_stroke(
                                         inner.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        label,
-                                        egui::FontId::proportional(if entry.is_video { 22.0 } else { 28.0 }),
-                                        label_color,
+                                        r,
+                                        egui::Stroke::new(1.4, theme::TEXT_MUTED),
                                     );
                                 }
 

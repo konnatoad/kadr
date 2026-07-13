@@ -18,7 +18,54 @@ mod video;
 use anyhow::Result;
 use app::KadrApp;
 
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = match info.payload().downcast_ref::<&str>() {
+            Some(s) => s.to_string(),
+            None => match info.payload().downcast_ref::<String>() {
+                Some(s) => s.clone(),
+                None => "unknown panic".to_string(),
+            },
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        show_fatal_error_popup(&format!(
+            "kadr ran into a problem and needs to close.\n\n{msg}\n\nat {location}"
+        ));
+    }));
+}
+
+#[cfg(windows)]
+fn show_fatal_error_popup(text: &str) {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::winuser::{MB_ICONERROR, MB_OK, MB_SYSTEMMODAL, MessageBoxW};
+
+    let wide_text: Vec<u16> = OsStr::new(text).encode_wide().chain(once(0)).collect();
+    let wide_title: Vec<u16> = OsStr::new("kadr - Fatal Error").encode_wide().chain(once(0)).collect();
+
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide_text.as_ptr(),
+            wide_title.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SYSTEMMODAL,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_fatal_error_popup(text: &str) {
+    eprintln!("kadr - Fatal Error: {text}");
+}
+
 fn main() -> Result<()> {
+    install_panic_hook();
+
     if std::env::var("KADR_LOG").is_ok() {
         env_logger::init();
     }
