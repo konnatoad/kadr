@@ -235,6 +235,7 @@ static CTX_FIELDS: &[(&str, &str, &str)] = &[
     ("interval_secs", "number",  "total display time for this slide"),
     ("current_index", "integer", "0-based index of the current image"),
     ("total",         "integer", "total number of images in the folder"),
+    ("fit_scale",     "number",  "zoom multiplier of fit size vs. real 1:1 size; 1.0/fit_scale = real size"),
 ];
 
 static RETURN_FIELDS: &[(&str, &str, &str)] = &[

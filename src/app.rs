@@ -83,6 +83,13 @@ pub struct KadrApp {
     prev_zoom: f32,
     /// Pan offset the outgoing image had at the moment the transition started.
     prev_offset: Vec2,
+    /// Lua-driven Ken Burns pan the outgoing image had at the moment the
+    /// transition started (fraction of viewport size, same units as `lua_pan`).
+    prev_lua_pan: Vec2,
+    /// Lua-driven opacity the outgoing image had at the moment the
+    /// transition started, so a Lua fade-out doesn't pop back to opaque
+    /// the instant the built-in crossfade takes over.
+    prev_opacity: f32,
     /// Crossfade progress: 0.0 = fully prev, 1.0 = fully current.
     transition_t: f32,
     // Physical monitor rect to snap the window to on the first frame.
@@ -125,6 +132,7 @@ impl KadrApp {
                 filter_videos: config.filter_videos,
                 sort_mode: config.viewer.sort_mode.clone(),
                 remember_last_folder: config.remember_last_folder,
+                loop_videos: config.loop_videos,
                 preferred_monitor: config.preferred_monitor,
                 bg_color: config.viewer.background_color,
                 thumb_size: config.thumbnail_size,
@@ -153,6 +161,8 @@ impl KadrApp {
             prev_image_size: Vec2::ZERO,
             prev_zoom: 1.0,
             prev_offset: Vec2::ZERO,
+            prev_lua_pan: Vec2::ZERO,
+            prev_opacity: 1.0,
             transition_t: 1.0,
             #[cfg(windows)]
             monitor_snap: if config.preferred_monitor > 0 {
@@ -289,7 +299,7 @@ impl KadrApp {
         let entry = &self.entries[self.current_index];
         if entry.media_type == MediaType::Video {
             let path = entry.path.clone();
-            match VideoContext::new(&path, self.egui_ctx.clone()) {
+            match VideoContext::new(&path, self.egui_ctx.clone(), self.config.loop_videos) {
                 Ok(ctx) => {
                     ctx.set_volume(self.video_volume);
                     self.video_ctx = Some(ctx);
@@ -867,6 +877,8 @@ impl eframe::App for KadrApp {
                 // continues its Ken Burns motion during the crossfade.
                 self.prev_zoom = self.viewer_state.zoom;
                 self.prev_offset = self.viewer_state.offset;
+                self.prev_lua_pan = self.viewer_state.lua_pan;
+                self.prev_opacity = self.viewer_state.lua_opacity;
 
                 // Capture the outgoing image before advancing the index.
                 self.prev_texture = self.current_texture.take();
@@ -902,17 +914,28 @@ impl eframe::App for KadrApp {
                     }
 
                     // on_advance: let Lua set initial zoom/pan for the incoming image.
+                    let vp = ctx.viewport_rect().size();
+                    let fit_scale = self.current_texture.as_ref().map_or(1.0, |tex| {
+                        let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                        (vp.x / sz.x).min(vp.y / sz.y).min(1.0) as f64
+                    });
                     let advance_cmd = self.lua_script.as_ref().and_then(|lua| {
                         lua.on_advance(&SlideContext {
                             current_index: self.current_index,
                             total: self.entries.len(),
-                            interval_secs: self.slideshow.interval_secs(),
+                            // `elapsed_secs` runs continuously across the crossfade-in
+                            // *and* the hold (see engine.rs), so the denominator Lua
+                            // divides by must be that same total lifetime, not just the
+                            // hold duration — otherwise `t` hits 1.0 one `transition_secs`
+                            // early and any Lua animation freezes for the remainder.
+                            interval_secs: self.slideshow.interval_secs()
+                                + self.slideshow.transition_secs as f64,
                             elapsed_secs: 0.0,
+                            fit_scale,
                         })
                         .ok()
                     });
                     if let Some(cmd) = advance_cmd {
-                        let vp = ctx.viewport_rect().size();
                         if let Some(v) = cmd.zoom_target {
                             if let Some(tex) = &self.current_texture {
                                 let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
@@ -944,17 +967,25 @@ impl eframe::App for KadrApp {
 
         // on_interval: ~60 Hz Lua callbacks for zoom / pan animation.
         if self.slideshow.active && !self.entries.is_empty() {
+            let vp = ctx.viewport_rect().size();
+            let fit_scale = self.current_texture.as_ref().map_or(1.0, |tex| {
+                let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                (vp.x / sz.x).min(vp.y / sz.y).min(1.0) as f64
+            });
             let interval_cmd = self.lua_script.as_ref().and_then(|lua| {
                 lua.on_interval(&SlideContext {
                     current_index: self.current_index,
                     total: self.entries.len(),
-                    interval_secs: self.slideshow.interval_secs(),
+                    // See the comment on the matching field in on_advance above:
+                    // elapsed_secs spans crossfade + hold, so this must too.
+                    interval_secs: self.slideshow.interval_secs()
+                        + self.slideshow.transition_secs as f64,
                     elapsed_secs: self.slideshow.elapsed_secs(),
+                    fit_scale,
                 })
                 .ok()
             });
             if let Some(cmd) = interval_cmd {
-                let vp = ctx.viewport_rect().size();
                 if let Some(v) = cmd.zoom_target {
                     if let Some(tex) = &self.current_texture {
                         let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
@@ -1002,18 +1033,29 @@ impl eframe::App for KadrApp {
             } else {
                 return;
             };
-            let prev_clone = self.prev_texture.clone();
-            let transition = prev_clone
-                .as_ref()
-                .filter(|_| self.current_texture.is_some())
-                .map(|p| TransitionData {
-                    prev_texture: p,
-                    prev_size: self.prev_image_size,
-                    prev_zoom: self.prev_zoom,
-                    prev_offset: self.prev_offset,
-                    t: self.transition_t,
-                });
-            show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
+            if self.current_texture.is_some() {
+                let prev_clone = self.prev_texture.clone();
+                let transition = prev_clone
+                    .as_ref()
+                    .map(|p| TransitionData {
+                        prev_texture: p,
+                        prev_size: self.prev_image_size,
+                        prev_zoom: self.prev_zoom,
+                        prev_offset: self.prev_offset,
+                        prev_lua_pan: self.prev_lua_pan,
+                        prev_opacity: self.prev_opacity,
+                        t: self.transition_t,
+                    });
+                show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
+            } else {
+                // New image hasn't finished loading yet — keep the outgoing
+                // image frozen at the zoom/pan it had when the transition
+                // began, instead of drawing it through viewer_state (already
+                // reset for the incoming image), which would snap it back to
+                // fit-zoom for a few frames.
+                let mut frozen = ViewerState::frozen(self.prev_zoom, self.prev_offset, self.prev_lua_pan, self.prev_opacity);
+                show_viewer(ui, &tex, &mut frozen, size, bg, None);
+            }
             return;
             } // end !is_video
         }
@@ -1221,18 +1263,29 @@ impl eframe::App for KadrApp {
                 };
 
                 if let Some(tex) = tex {
-                    // Only render crossfade when both images are present.
-                    let prev_clone = self.prev_texture.clone();
-                    let transition = prev_clone.as_ref()
-                        .filter(|_| self.current_texture.is_some())
-                        .map(|p| TransitionData {
-                            prev_texture: p,
-                            prev_size:    self.prev_image_size,
-                            prev_zoom:    self.prev_zoom,
-                            prev_offset:  self.prev_offset,
-                            t:            self.transition_t,
-                        });
-                    show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
+                    if self.current_texture.is_some() {
+                        // Only render crossfade when both images are present.
+                        let prev_clone = self.prev_texture.clone();
+                        let transition = prev_clone.as_ref()
+                            .map(|p| TransitionData {
+                                prev_texture: p,
+                                prev_size:    self.prev_image_size,
+                                prev_zoom:    self.prev_zoom,
+                                prev_offset:  self.prev_offset,
+                                prev_lua_pan: self.prev_lua_pan,
+                                prev_opacity: self.prev_opacity,
+                                t:            self.transition_t,
+                            });
+                        show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
+                    } else {
+                        // New image hasn't finished loading yet — keep the outgoing
+                        // image frozen at the zoom/pan it had when the transition
+                        // began, instead of drawing it through viewer_state (already
+                        // reset for the incoming image), which would snap it back to
+                        // fit-zoom for a few frames.
+                        let mut frozen = ViewerState::frozen(self.prev_zoom, self.prev_offset, self.prev_lua_pan, self.prev_opacity);
+                        show_viewer(ui, &tex, &mut frozen, size, bg, None);
+                    }
                 } else {
                     ui.centered_and_justified(|ui| { ui.spinner(); });
                 }
@@ -1398,6 +1451,10 @@ impl eframe::App for KadrApp {
                 self.config.filter_videos = self.settings_dialog.filter_videos;
                 self.config.viewer.sort_mode = self.settings_dialog.sort_mode.clone();
                 self.config.remember_last_folder = self.settings_dialog.remember_last_folder;
+                self.config.loop_videos = self.settings_dialog.loop_videos;
+                if let Some(vc) = &self.video_ctx {
+                    vc.set_loop(self.config.loop_videos);
+                }
                 self.config.preferred_monitor = self.settings_dialog.preferred_monitor;
                 self.config.viewer.background_color = self.settings_dialog.bg_color;
                 self.config.thumbnail_size = self.settings_dialog.thumb_size;

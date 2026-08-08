@@ -14,6 +14,10 @@ pub struct SlideContext {
     pub total: usize,
     pub interval_secs: f64,
     pub elapsed_secs: f64,
+    /// Zoom multiplier at which the image is shown at fit size, expressed as
+    /// a fraction of its true 1:1 pixel size. `1.0 / fit_scale` is therefore
+    /// the `zoom_target` that displays the image at real (100 %) size.
+    pub fit_scale: f64,
 }
 
 #[derive(Debug, Default)]
@@ -78,6 +82,7 @@ fn fill_table(table: &Table, ctx: &SlideContext) -> LuaResult<()> {
     table.set("total", ctx.total)?;
     table.set("interval_secs", ctx.interval_secs)?;
     table.set("elapsed_secs", ctx.elapsed_secs)?;
+    table.set("fit_scale", ctx.fit_scale)?;
     Ok(())
 }
 
