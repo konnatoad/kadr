@@ -36,6 +36,21 @@ impl Default for ViewerState {
 }
 
 impl ViewerState {
+    /// A read-only snapshot used to keep the outgoing image visually frozen
+    /// at its captured zoom/pan while the incoming image is still loading —
+    /// instead of drawing it through the real `ViewerState`, which has
+    /// already been reset (fit_mode, zoom = 1.0) for the incoming image.
+    pub fn frozen(zoom: f32, offset: Vec2, lua_pan: Vec2, lua_opacity: f32) -> Self {
+        Self {
+            zoom,
+            offset,
+            fit_mode: false,
+            lua_pan,
+            lua_opacity,
+            ..Default::default()
+        }
+    }
+
     pub fn reset(&mut self) {
         self.zoom = 1.0;
         self.offset = Vec2::ZERO;
@@ -115,6 +130,11 @@ pub struct TransitionData<'a> {
     pub prev_zoom:    f32,
     /// Pan offset the outgoing image had when the transition started.
     pub prev_offset:  Vec2,
+    /// Lua-driven Ken Burns pan the outgoing image had when the transition
+    /// started (fraction of viewport size).
+    pub prev_lua_pan: Vec2,
+    /// Lua-driven opacity the outgoing image had when the transition started.
+    pub prev_opacity: f32,
     pub t:            f32,
 }
 
@@ -150,11 +170,15 @@ pub fn show_viewer(
     // ── Outgoing image (drawn beneath, fades out) ────────────────────────────
     if let Some(ref tr) = transition {
         if tr.t < 1.0 && tr.prev_size.x > 0.0 && tr.prev_size.y > 0.0 {
-            let prev_alpha = ((1.0 - tr.t) * 255.0) as u8;
+            let prev_alpha = ((1.0 - tr.t) * tr.prev_opacity.clamp(0.0, 1.0) * 255.0) as u8;
             // Preserve the exact zoom + pan the outgoing image had so it
             // continues its Ken Burns motion rather than snapping to fit-scale.
             let prev_scaled = tr.prev_size * tr.prev_zoom;
-            let prev_center = rect.center() + tr.prev_offset;
+            let prev_lua_pixel_offset = Vec2::new(
+                tr.prev_lua_pan.x * available.x,
+                tr.prev_lua_pan.y * available.y,
+            );
+            let prev_center = rect.center() + tr.prev_offset + prev_lua_pixel_offset;
             let prev_rect   = Rect::from_center_size(prev_center, prev_scaled);
             ui.painter().image(
                 tr.prev_texture.id(),

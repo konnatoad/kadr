@@ -20,6 +20,8 @@ pub struct AppConfig {
     pub remember_last_folder: bool,
     #[serde(default)]
     pub preferred_monitor: usize,
+    #[serde(default)]
+    pub loop_videos: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +83,7 @@ impl Default for AppConfig {
             scan_subfolders: false,
             remember_last_folder: true,
             preferred_monitor: 0,
+            loop_videos: false,
         }
     }
 }

@@ -16,6 +16,7 @@ pub struct SettingsDialog {
     pub filter_videos: bool,
     pub sort_mode: SortMode,
     pub remember_last_folder: bool,
+    pub loop_videos: bool,
 
     // Appearance
     pub bg_color: [f32; 3],
@@ -60,6 +61,7 @@ impl Default for SettingsDialog {
             filter_videos: true,
             sort_mode: SortMode::Name,
             remember_last_folder: true,
+            loop_videos: false,
             preferred_monitor: 0,
             bg_color: [0.08, 0.08, 0.08],
             thumb_size: 80.0,
@@ -235,6 +237,11 @@ impl SettingsDialog {
         ui.checkbox(&mut self.filter_images, "Show images");
         ui.add_space(2.0);
         ui.checkbox(&mut self.filter_videos, "Show videos");
+
+        ui.add_space(12.0);
+        widgets::section_label(ui, "Playback");
+        ui.add_space(4.0);
+        ui.checkbox(&mut self.loop_videos, "Loop videos");
 
         ui.add_space(12.0);
         widgets::section_label(ui, "Sort");

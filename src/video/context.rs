@@ -34,7 +34,7 @@ unsafe impl Send for VideoContext {}
 unsafe impl Sync for VideoContext {}
 
 impl VideoContext {
-    pub fn new(path: &std::path::Path, egui_ctx: egui::Context) -> anyhow::Result<Self> {
+    pub fn new(path: &std::path::Path, egui_ctx: egui::Context, loop_playback: bool) -> anyhow::Result<Self> {
         let path_str = path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("video path is not valid UTF-8"))?;
@@ -100,7 +100,7 @@ impl VideoContext {
             ];
             mpv_command(handle, cmd.as_ptr());
 
-            Ok(Self {
+            let ctx = Self {
                 handle,
                 render_ctx,
                 cb_data,
@@ -108,7 +108,17 @@ impl VideoContext {
                 width: 0,
                 height: 0,
                 last_render: None,
-            })
+            };
+            ctx.set_loop(loop_playback);
+            Ok(ctx)
+        }
+    }
+
+    /// Enable or disable looping the current file when it reaches the end.
+    pub fn set_loop(&self, enabled: bool) {
+        let value = if enabled { b"inf\0".as_ptr() } else { b"no\0".as_ptr() };
+        unsafe {
+            mpv_set_property_string(self.handle, b"loop-file\0".as_ptr() as _, value as _);
         }
     }
 
