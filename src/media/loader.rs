@@ -4,6 +4,27 @@ use std::path::Path;
 
 use super::formats::MediaType;
 
+/// Ceiling on the RGBA buffer a single decode may allocate. `image::open`
+/// already enforces its own 512 MB `Limits::default()`; mozjpeg and rawloader
+/// don't, and a corrupt header claiming e.g. 200000×200000 would otherwise
+/// allocate gigabytes, fail, and `abort()` the process — an abort no crash
+/// handler can turn into a message. Mirror `image`'s limit for those two.
+const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+
+fn guard_pixels(width: u32, height: u32) -> Result<()> {
+    let limit_mb = MAX_DECODE_BYTES / (1024 * 1024);
+    if u64::from(width) * u64::from(height) * 4 > MAX_DECODE_BYTES {
+        return Err(anyhow!(
+            "image is {}×{}px — beyond the {} MB kadr will decode; \
+             the file is probably corrupt",
+            width,
+            height,
+            limit_mb
+        ));
+    }
+    Ok(())
+}
+
 pub struct LoadedImage {
     pub image: DynamicImage,
     pub preview: egui::ColorImage,
@@ -73,6 +94,8 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
         return crate::heif::decode_heif(&data);
     }
 
+    // `image::open` already caps allocation at `Limits::default()` (512 MB), so
+    // a bogus huge-dimension header fails with an error rather than crashing.
     Ok(image::open(path)?)
 }
 
@@ -84,6 +107,7 @@ fn load_jpeg_turbo(data: &[u8]) -> Result<DynamicImage> {
 
     let width  = decomp.width()  as u32;
     let height = decomp.height() as u32;
+    guard_pixels(width, height)?;
 
     let mut rgb = decomp.rgb()
         .map_err(|e| anyhow::anyhow!("mozjpeg rgb: {e}"))?;
@@ -107,6 +131,7 @@ fn load_raw(path: &Path) -> Result<DynamicImage> {
     let raw = rawloader::decode_file(path).map_err(|e| anyhow!("RAW decode failed: {e}"))?;
 
     let (width, height) = (raw.width, raw.height);
+    guard_pixels(width as u32, height as u32)?;
 
     match raw.data {
         rawloader::RawImageData::Integer(data) => {

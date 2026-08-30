@@ -44,7 +44,17 @@ lru = "0.18"
 rayon = "1"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winuser", "shellapi"] }
+winapi = { version = "0.3", features = [
+  "winuser",
+  "shellapi",
+  "errhandlingapi",
+  "processthreadsapi",
+  "libloaderapi",
+  "winnt",
+  "minwindef",
+  "minwinbase",
+  "sysinfoapi",
+] }
 
 [build-dependencies]
 winres = "0.1"
