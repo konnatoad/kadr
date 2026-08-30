@@ -280,6 +280,7 @@ impl KadrApp {
         self.preload_texture = None;
 
         thread::spawn(move || {
+            let _crumb = crate::crash::Breadcrumb::new(format!("preloading {}", path.display()));
             if let Ok(img) = LoadedImage::load(&path) {
                 let result = LoadResult {
                     index: expected,
@@ -299,6 +300,7 @@ impl KadrApp {
         let entry = &self.entries[self.current_index];
         if entry.media_type == MediaType::Video {
             let path = entry.path.clone();
+            let _crumb = crate::crash::Breadcrumb::new(format!("opening video {}", path.display()));
             match VideoContext::new(&path, self.egui_ctx.clone(), self.config.loop_videos) {
                 Ok(ctx) => {
                     ctx.set_volume(self.video_volume);
@@ -327,6 +329,11 @@ impl KadrApp {
         );
 
         thread::spawn(move || {
+            // If the process dies hard inside a decoder (an allocation abort on
+            // a corrupt header, a stack overflow) neither the panic hook nor the
+            // exception filter runs — this note on disk is what survives.
+            let _crumb = crate::crash::Breadcrumb::new(format!("opening {}", path.display()));
+
             if is_jpeg {
                 // ── Single-pass JPEG load ─────────────────────────────────
                 // Open the file once and read it in two steps so the EXIF
@@ -685,6 +692,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            let _crumb = crate::crash::Breadcrumb::new(format!("rotating {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| save_image(&apply_rotation(img.image, degrees), &path))
                 .map(|_| index)
@@ -703,6 +711,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            let _crumb = crate::crash::Breadcrumb::new(format!("flipping {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| {
                     let flipped = if horizontal {
@@ -1007,7 +1016,7 @@ impl eframe::App for KadrApp {
             i.raw
                 .dropped_files
                 .iter()
-                .filter_map(|f| f.path.clone())
+                .map(|f| f.path().to_path_buf())
                 .collect()
         });
         if let Some(path) = dropped.into_iter().next() {

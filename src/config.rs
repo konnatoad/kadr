@@ -90,10 +90,18 @@ impl Default for AppConfig {
 
 fn default_true() -> bool { true }
 
+/// `%APPDATA%\kadr` — the directory that holds `config.toml` and crash logs.
+/// Falls back to the current directory if `APPDATA` is not set.
+pub fn kadr_dir() -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    base.join("kadr")
+}
+
 impl AppConfig {
     pub fn config_path() -> PathBuf {
-        let dir = dirs_next();
-        dir.join("kadr").join("config.toml")
+        kadr_dir().join("config.toml")
     }
 
     pub fn load() -> Self {
@@ -116,10 +124,3 @@ impl AppConfig {
     }
 }
 
-fn dirs_next() -> PathBuf {
-    if let Some(dir) = std::env::var_os("APPDATA") {
-        PathBuf::from(dir)
-    } else {
-        std::env::current_dir().unwrap_or_default()
-    }
-}
