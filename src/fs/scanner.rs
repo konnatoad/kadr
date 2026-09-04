@@ -1,6 +1,7 @@
+#[allow(dead_code)]
 use crate::media::{
-    formats::{is_image, is_video},
     MediaEntry,
+    formats::{is_image, is_video},
 };
 use std::path::Path;
 use walkdir::WalkDir;
@@ -42,6 +43,7 @@ pub fn scan_folder(folder: &Path, opts: &ScanOptions) -> Vec<MediaEntry> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn scan_for_image(path: &Path, opts: &ScanOptions) -> Vec<MediaEntry> {
     if path.is_file() {
         let folder = path.parent().unwrap_or(path);

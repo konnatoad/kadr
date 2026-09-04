@@ -7,7 +7,6 @@
 //! source instead of each redeclaring their own `Color32` literals.
 //!
 //! Palette: Tokyo Night (deep navy background, blue/purple accents).
-
 use egui::{Color32, RichText, Stroke, Ui};
 
 /// Palette constants, mirroring the values set in `apply_theme` (app.rs).
@@ -74,7 +73,8 @@ pub mod theme {
         Color32::from_rgba_unmultiplied(0x7a, 0xa2, 0xf7, alpha)
     }
 
-    /// The secondary accent (purple) at a given alpha.
+    #[allow(dead_code)]
+    // The secondary accent (purple) at a given alpha.
     pub fn accent2_fill(alpha: u8) -> Color32 {
         Color32::from_rgba_unmultiplied(0xbb, 0x9a, 0xf7, alpha)
     }
@@ -117,25 +117,38 @@ pub fn icon_button(
     let gap = 7.0_f32;
     let pad = egui::vec2(10.0, 6.0);
     let font = egui::FontId::proportional(12.5);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), font, theme::TEXT);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, theme::TEXT);
 
     let content_w = icon_size + gap + galley.size().x;
-    let desired = egui::vec2(content_w + pad.x * 2.0, icon_size.max(galley.size().y) + pad.y * 2.0);
+    let desired = egui::vec2(
+        content_w + pad.x * 2.0,
+        icon_size.max(galley.size().y) + pad.y * 2.0,
+    );
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
 
     if resp.hovered() {
-        ui.painter().rect_filled(rect, theme::RADIUS_SM, theme::SURFACE4);
+        ui.painter()
+            .rect_filled(rect, theme::RADIUS_SM, theme::SURFACE4);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let icon_col = if resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let icon_col = if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
     let icon_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x + pad.x, rect.center().y - icon_size / 2.0),
         egui::vec2(icon_size, icon_size),
     );
     icon(ui.painter(), icon_rect, icon_col);
 
-    let text_pos = egui::pos2(icon_rect.right() + gap, rect.center().y - galley.size().y / 2.0);
+    let text_pos = egui::pos2(
+        icon_rect.right() + gap,
+        rect.center().y - galley.size().y / 2.0,
+    );
     ui.painter().galley(text_pos, galley, theme::TEXT);
 
     resp
@@ -149,10 +162,15 @@ pub fn icon_only_button(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     if resp.hovered() {
-        ui.painter().circle_filled(rect.center(), size * 0.5, theme::SURFACE4);
+        ui.painter()
+            .circle_filled(rect.center(), size * 0.5, theme::SURFACE4);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let icon_col = if resp.hovered() { theme::TEXT } else { theme::TEXT_DIM };
+    let icon_col = if resp.hovered() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
     icon(ui.painter(), rect.shrink(size * 0.22), icon_col);
     resp
 }
@@ -176,16 +194,24 @@ pub fn accent_button_sized(
     // visuals, so disabled state (e.g. inside add_enabled_ui(false, ..)) needs
     // to be dimmed explicitly or it would otherwise look identical to enabled.
     let enabled = ui.is_enabled();
-    let text_col = if enabled { theme::ACCENT_TEXT } else { theme::TEXT_MUTED };
+    let text_col = if enabled {
+        theme::ACCENT_TEXT
+    } else {
+        theme::TEXT_MUTED
+    };
     let scale = if enabled { 1.0 } else { 0.4 };
     let btn = egui::Button::new(RichText::new(label).size(font_size).color(text_col))
         .fill(theme::accent_fill((fill_alpha as f32 * scale) as u8))
-        .stroke(Stroke::new(1.0, theme::accent_fill((stroke_alpha as f32 * scale) as u8)))
+        .stroke(Stroke::new(
+            1.0,
+            theme::accent_fill((stroke_alpha as f32 * scale) as u8),
+        ))
         .corner_radius(theme::RADIUS_SM);
     ui.add(btn)
 }
 
-/// Plain toolbar-style action button (default egui widget styling, sized text).
+#[allow(dead_code)]
+// Plain toolbar-style action button (default egui widget styling, sized text).
 pub fn action_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.button(RichText::new(label).size(12.5))
 }

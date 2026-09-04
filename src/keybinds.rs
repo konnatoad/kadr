@@ -58,6 +58,7 @@ impl KeyAction {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all() -> Vec<KeyAction> {
         vec![
             KeyAction::NextImage,
@@ -97,11 +98,21 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     pub fn simple(key: SerializableKey) -> Self {
-        Self { key, ctrl: false, shift: false, alt: false }
+        Self {
+            key,
+            ctrl: false,
+            shift: false,
+            alt: false,
+        }
     }
 
     pub fn with_ctrl(key: SerializableKey) -> Self {
-        Self { key, ctrl: true, shift: false, alt: false }
+        Self {
+            key,
+            ctrl: true,
+            shift: false,
+            alt: false,
+        }
     }
 
     pub fn matches(&self, input: &egui::InputState) -> bool {
@@ -114,9 +125,15 @@ impl KeyBinding {
 
     pub fn display(&self) -> String {
         let mut parts = Vec::new();
-        if self.ctrl { parts.push("Ctrl".to_string()); }
-        if self.shift { parts.push("Shift".to_string()); }
-        if self.alt { parts.push("Alt".to_string()); }
+        if self.ctrl {
+            parts.push("Ctrl".to_string());
+        }
+        if self.shift {
+            parts.push("Shift".to_string());
+        }
+        if self.alt {
+            parts.push("Alt".to_string());
+        }
         parts.push(format!("{:?}", Key::from(self.key)));
         parts.join("+")
     }
@@ -132,12 +149,62 @@ pub enum SerializableKey {
     Enter,
     Escape,
     Delete,
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
-    Plus, Minus, Comma, Period,
-    Home, End, PageUp, PageDown,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
+    Plus,
+    Minus,
+    Comma,
+    Period,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 }
 
 impl From<SerializableKey> for Key {
@@ -217,28 +284,98 @@ pub struct KeyBindings(pub HashMap<KeyAction, KeyBinding>);
 impl Default for KeyBindings {
     fn default() -> Self {
         let mut map = HashMap::new();
-        map.insert(KeyAction::NextImage, KeyBinding::simple(SerializableKey::ArrowRight));
-        map.insert(KeyAction::PrevImage, KeyBinding::simple(SerializableKey::ArrowLeft));
-        map.insert(KeyAction::ToggleZoom, KeyBinding::simple(SerializableKey::Space));
+        map.insert(
+            KeyAction::NextImage,
+            KeyBinding::simple(SerializableKey::ArrowRight),
+        );
+        map.insert(
+            KeyAction::PrevImage,
+            KeyBinding::simple(SerializableKey::ArrowLeft),
+        );
+        map.insert(
+            KeyAction::ToggleZoom,
+            KeyBinding::simple(SerializableKey::Space),
+        );
         map.insert(KeyAction::ZoomIn, KeyBinding::simple(SerializableKey::Plus));
-        map.insert(KeyAction::ZoomOut, KeyBinding::simple(SerializableKey::Minus));
-        map.insert(KeyAction::ZoomReset, KeyBinding::simple(SerializableKey::Num0));
-        map.insert(KeyAction::PanUp, KeyBinding::simple(SerializableKey::ArrowUp));
-        map.insert(KeyAction::PanDown, KeyBinding::simple(SerializableKey::ArrowDown));
-        map.insert(KeyAction::PanLeft, KeyBinding::simple(SerializableKey::ArrowLeft));
-        map.insert(KeyAction::PanRight, KeyBinding::simple(SerializableKey::ArrowRight));
-        map.insert(KeyAction::Fullscreen, KeyBinding::simple(SerializableKey::F11));
-        map.insert(KeyAction::ToggleThumbnails, KeyBinding::simple(SerializableKey::T));
+        map.insert(
+            KeyAction::ZoomOut,
+            KeyBinding::simple(SerializableKey::Minus),
+        );
+        map.insert(
+            KeyAction::ZoomReset,
+            KeyBinding::simple(SerializableKey::Num0),
+        );
+        map.insert(
+            KeyAction::PanUp,
+            KeyBinding::simple(SerializableKey::ArrowUp),
+        );
+        map.insert(
+            KeyAction::PanDown,
+            KeyBinding::simple(SerializableKey::ArrowDown),
+        );
+        map.insert(
+            KeyAction::PanLeft,
+            KeyBinding::simple(SerializableKey::ArrowLeft),
+        );
+        map.insert(
+            KeyAction::PanRight,
+            KeyBinding::simple(SerializableKey::ArrowRight),
+        );
+        map.insert(
+            KeyAction::Fullscreen,
+            KeyBinding::simple(SerializableKey::F11),
+        );
+        map.insert(
+            KeyAction::ToggleThumbnails,
+            KeyBinding::simple(SerializableKey::T),
+        );
         map.insert(KeyAction::RotateCW, KeyBinding::simple(SerializableKey::R));
-        map.insert(KeyAction::RotateCCW, KeyBinding { key: SerializableKey::R, ctrl: false, shift: true, alt: false });
-        map.insert(KeyAction::FlipHorizontal, KeyBinding::simple(SerializableKey::H));
-        map.insert(KeyAction::FlipVertical, KeyBinding::simple(SerializableKey::V));
-        map.insert(KeyAction::OpenFolder, KeyBinding::with_ctrl(SerializableKey::O));
-        map.insert(KeyAction::OpenFile, KeyBinding { key: SerializableKey::O, ctrl: true, shift: true, alt: false });
-        map.insert(KeyAction::CombineFolders, KeyBinding::with_ctrl(SerializableKey::E));
-        map.insert(KeyAction::ToggleSlideshow, KeyBinding::simple(SerializableKey::S));
-        map.insert(KeyAction::OpenSettings, KeyBinding::with_ctrl(SerializableKey::Comma));
-        map.insert(KeyAction::DeleteFile, KeyBinding::simple(SerializableKey::Delete));
+        map.insert(
+            KeyAction::RotateCCW,
+            KeyBinding {
+                key: SerializableKey::R,
+                ctrl: false,
+                shift: true,
+                alt: false,
+            },
+        );
+        map.insert(
+            KeyAction::FlipHorizontal,
+            KeyBinding::simple(SerializableKey::H),
+        );
+        map.insert(
+            KeyAction::FlipVertical,
+            KeyBinding::simple(SerializableKey::V),
+        );
+        map.insert(
+            KeyAction::OpenFolder,
+            KeyBinding::with_ctrl(SerializableKey::O),
+        );
+        map.insert(
+            KeyAction::OpenFile,
+            KeyBinding {
+                key: SerializableKey::O,
+                ctrl: true,
+                shift: true,
+                alt: false,
+            },
+        );
+        map.insert(
+            KeyAction::CombineFolders,
+            KeyBinding::with_ctrl(SerializableKey::E),
+        );
+        map.insert(
+            KeyAction::ToggleSlideshow,
+            KeyBinding::simple(SerializableKey::S),
+        );
+        map.insert(
+            KeyAction::OpenSettings,
+            KeyBinding::with_ctrl(SerializableKey::Comma),
+        );
+        map.insert(
+            KeyAction::DeleteFile,
+            KeyBinding::simple(SerializableKey::Delete),
+        );
         map.insert(KeyAction::Quit, KeyBinding::with_ctrl(SerializableKey::Q));
         Self(map)
     }
@@ -250,6 +387,9 @@ impl KeyBindings {
     }
 
     pub fn is_action(&self, action: &KeyAction, input: &egui::InputState) -> bool {
-        self.0.get(action).map(|b| b.matches(input)).unwrap_or(false)
+        self.0
+            .get(action)
+            .map(|b| b.matches(input))
+            .unwrap_or(false)
     }
 }

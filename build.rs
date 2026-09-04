@@ -86,7 +86,7 @@ fn generate_ico(path: &str) {
 
 fn make_bmp_image(size: u32) -> Vec<u8> {
     let pixels = make_icon_pixels(size);
-    let and_stride = ((size + 31) / 32) * 4;
+    let and_stride = size.div_ceil(32) * 4;
     let and_mask = vec![0u8; (and_stride * size) as usize];
 
     let mut bmp: Vec<u8> = Vec::new();

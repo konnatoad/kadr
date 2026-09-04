@@ -184,12 +184,11 @@ fn draw_seek_bar(ui: &mut Ui, track: Rect, position: f64, duration: f64) -> Opti
         p.circle_stroke(handle_center, radius, Stroke::new(1.0, theme::ACCENT));
     }
 
-    if resp.clicked() || resp.dragged() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+    if (resp.clicked() || resp.dragged())
+        && let Some(pos) = resp.interact_pointer_pos() {
             let t = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64;
             return Some(ControlsAction::SeekTo(t * duration));
         }
-    }
 
     None
 }
@@ -214,12 +213,11 @@ fn draw_vol_bar(ui: &mut Ui, track: Rect, volume: f64) -> Option<f64> {
     let active = resp.hovered() || resp.dragged();
     p.circle_filled(handle_center, if active { 6.0 } else { 4.0 }, theme::TEXT);
 
-    if resp.clicked() || resp.dragged() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+    if (resp.clicked() || resp.dragged())
+        && let Some(pos) = resp.interact_pointer_pos() {
             let t = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
             return Some(t as f64);
         }
-    }
 
     None
 }

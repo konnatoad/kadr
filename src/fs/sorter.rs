@@ -42,7 +42,7 @@ impl SortMode {
     }
 }
 
-pub fn sort_entries(entries: &mut Vec<MediaEntry>, mode: &SortMode) {
+pub fn sort_entries(entries: &mut [MediaEntry], mode: &SortMode) {
     match mode {
         SortMode::Name => {
             entries.sort_by(|a, b| {
@@ -58,19 +58,31 @@ pub fn sort_entries(entries: &mut Vec<MediaEntry>, mode: &SortMode) {
             entries.sort_by_key(|e| e.file_size);
         }
         SortMode::SizeReverse => {
-            entries.sort_by(|a, b| b.file_size.cmp(&a.file_size));
+            entries.sort_by_key(|b| std::cmp::Reverse(b.file_size));
         }
         SortMode::Modified => {
-            entries.sort_by(|a, b| a.modified.cmp(&b.modified));
+            entries.sort_by_key(|a| a.modified);
         }
         SortMode::ModifiedReverse => {
-            entries.sort_by(|a, b| b.modified.cmp(&a.modified));
+            entries.sort_by_key(|b| std::cmp::Reverse(b.modified));
         }
         SortMode::Type => {
             entries.sort_by(|a, b| {
-                let ext_a = a.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                let ext_b = b.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                ext_a.cmp(&ext_b).then_with(|| natural_cmp(&a.file_name, &b.file_name))
+                let ext_a = a
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let ext_b = b
+                    .path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                ext_a
+                    .cmp(&ext_b)
+                    .then_with(|| natural_cmp(&a.file_name, &b.file_name))
             });
         }
         SortMode::Random => {
@@ -89,16 +101,28 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (None, _) => return std::cmp::Ordering::Less,
             (_, None) => return std::cmp::Ordering::Greater,
             (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
-                let an: u64 = ai.by_ref().take_while(|c| c.is_ascii_digit())
-                    .collect::<String>().parse().unwrap_or(0);
-                let bn: u64 = bi.by_ref().take_while(|c| c.is_ascii_digit())
-                    .collect::<String>().parse().unwrap_or(0);
+                let an: u64 = ai
+                    .by_ref()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                let bn: u64 = bi
+                    .by_ref()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
                 let ord = an.cmp(&bn);
-                if ord != std::cmp::Ordering::Equal { return ord; }
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
             }
             (Some(ac), Some(bc)) => {
                 let ord = ac.cmp(&bc);
-                if ord != std::cmp::Ordering::Equal { return ord; }
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
                 ai.next();
                 bi.next();
             }

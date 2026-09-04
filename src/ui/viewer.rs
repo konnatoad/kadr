@@ -168,8 +168,8 @@ pub fn show_viewer(
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
 
     // ── Outgoing image (drawn beneath, fades out) ────────────────────────────
-    if let Some(ref tr) = transition {
-        if tr.t < 1.0 && tr.prev_size.x > 0.0 && tr.prev_size.y > 0.0 {
+    if let Some(ref tr) = transition
+        && tr.t < 1.0 && tr.prev_size.x > 0.0 && tr.prev_size.y > 0.0 {
             let prev_alpha = ((1.0 - tr.t) * tr.prev_opacity.clamp(0.0, 1.0) * 255.0) as u8;
             // Preserve the exact zoom + pan the outgoing image had so it
             // continues its Ken Burns motion rather than snapping to fit-scale.
@@ -187,7 +187,6 @@ pub fn show_viewer(
                 Color32::from_white_alpha(prev_alpha),
             );
         }
-    }
 
     // ── Current image (fades in, also respects lua_opacity) ──────────────────
     let transition_t = match &transition {
