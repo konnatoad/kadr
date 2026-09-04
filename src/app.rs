@@ -8,15 +8,14 @@ use lru::LruCache;
 use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
 use crate::config::AppConfig;
-use crate::fs::combine::{combine_folders, count_images, CombineResult};
-use std::sync::atomic::AtomicUsize;
+use crate::fs::combine::{CombineResult, combine_folders, count_images};
 use crate::fs::scanner::{ScanOptions, scan_folder};
 use crate::fs::sorter::sort_entries;
 use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
 use crate::media::loader::{
-    LoadedImage, apply_flip_horizontal, apply_flip_vertical, apply_rotation, save_image,
-    try_exif_thumbnail_from_bytes, load_jpeg_from_bytes,
+    LoadedImage, apply_flip_horizontal, apply_flip_vertical, apply_rotation, load_jpeg_from_bytes,
+    save_image, try_exif_thumbnail_from_bytes,
 };
 use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
@@ -26,10 +25,11 @@ use crate::ui::lua_editor::{LuaEditor, LuaEditorAction};
 use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
 use crate::ui::toolbar::show_toolbar;
-use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
 use crate::ui::video_controls::{ControlsAction, show_video_controls};
+use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
 use crate::ui::widgets::theme;
 use crate::video::VideoContext;
+use std::sync::atomic::AtomicUsize;
 
 const THUMB_CACHE_LIMIT: usize = 200;
 
@@ -317,8 +317,8 @@ impl KadrApp {
         let path = entry.path.clone();
         let index = self.current_index;
         let result_slot = Arc::clone(&self.loading);
-        let thumb_slot  = Arc::clone(&self.thumb_loading);
-        let ctx         = self.egui_ctx.clone();
+        let thumb_slot = Arc::clone(&self.thumb_loading);
+        let ctx = self.egui_ctx.clone();
 
         let is_jpeg = matches!(
             path.extension()
@@ -344,7 +344,9 @@ impl KadrApp {
                     Ok(f) => f,
                     Err(e) => {
                         *result_slot.lock().unwrap() = Some(LoadResult {
-                            index, image: None, error: Some(e.to_string()),
+                            index,
+                            image: None,
+                            error: Some(e.to_string()),
                         });
                         ctx.request_repaint();
                         return;
@@ -357,7 +359,9 @@ impl KadrApp {
 
                 if let Some(thumb) = try_exif_thumbnail_from_bytes(&header) {
                     *thumb_slot.lock().unwrap() = Some(LoadResult {
-                        index, image: Some(thumb), error: None,
+                        index,
+                        image: Some(thumb),
+                        error: None,
                     });
                     ctx.request_repaint();
                 }
@@ -377,7 +381,9 @@ impl KadrApp {
                         error: None,
                     },
                     Err(e) => LoadResult {
-                        index, image: None, error: Some(e.to_string()),
+                        index,
+                        image: None,
+                        error: Some(e.to_string()),
                     },
                 };
                 *result_slot.lock().unwrap() = Some(result);
@@ -391,7 +397,9 @@ impl KadrApp {
                         error: None,
                     },
                     Err(e) => LoadResult {
-                        index, image: None, error: Some(e.to_string()),
+                        index,
+                        image: None,
+                        error: Some(e.to_string()),
                     },
                 };
                 *result_slot.lock().unwrap() = Some(result);
@@ -434,13 +442,17 @@ impl KadrApp {
                     if let Some(thumb) = try_exif_thumbnail_from_bytes(&header) {
                         Some(make_thumbnail(&thumb, 80))
                     } else {
-                        LoadedImage::load(&path).ok().map(|img| make_thumbnail(img.to_egui_image(), 80))
+                        LoadedImage::load(&path)
+                            .ok()
+                            .map(|img| make_thumbnail(img.to_egui_image(), 80))
                     }
                 } else {
                     None
                 }
             } else {
-                LoadedImage::load(&path).ok().map(|img| make_thumbnail(img.to_egui_image(), 80))
+                LoadedImage::load(&path)
+                    .ok()
+                    .map(|img| make_thumbnail(img.to_egui_image(), 80))
             };
 
             if let Some(thumb) = color_img {
@@ -512,22 +524,26 @@ impl KadrApp {
                 do_quit = i.modifiers.ctrl && i.key_pressed(egui::Key::Q);
             });
 
-            if space {
-                if let Some(vc) = &self.video_ctx { vc.play_pause(); }
+            if space && let Some(vc) = &self.video_ctx {
+                vc.play_pause();
             }
-            if left {
-                if let Some(vc) = &self.video_ctx { vc.seek_relative(-5.0); }
+            if left && let Some(vc) = &self.video_ctx {
+                vc.seek_relative(-5.0);
             }
-            if right {
-                if let Some(vc) = &self.video_ctx { vc.seek_relative(5.0); }
+            if right && let Some(vc) = &self.video_ctx {
+                vc.seek_relative(5.0);
             }
             if up {
                 self.video_volume = (self.video_volume + 0.05).min(1.0);
-                if let Some(vc) = &self.video_ctx { vc.set_volume(self.video_volume); }
+                if let Some(vc) = &self.video_ctx {
+                    vc.set_volume(self.video_volume);
+                }
             }
             if down {
                 self.video_volume = (self.video_volume - 0.05).max(0.0);
-                if let Some(vc) = &self.video_ctx { vc.set_volume(self.video_volume); }
+                if let Some(vc) = &self.video_ctx {
+                    vc.set_volume(self.video_volume);
+                }
             }
             if pgdn {
                 self.navigate(1);
@@ -801,47 +817,44 @@ impl eframe::App for KadrApp {
         // Poll EXIF thumbnail — show low-res preview instantly while full decode runs.
         // Only applied when no full image is present yet; index check discards stale results.
         let thumb_result = self.thumb_loading.lock().unwrap().take();
-        if let Some(result) = thumb_result {
-            if result.index == self.current_index && self.current_texture.is_none() {
-                if let Some(color_img) = result.image {
-                    let tex =
-                        ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
-                    self.current_texture = Some(tex);
-                }
-            }
+        if let Some(result) = thumb_result
+            && result.index == self.current_index
+            && self.current_texture.is_none()
+            && let Some(color_img) = result.image
+        {
+            let tex = ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
+            self.current_texture = Some(tex);
         }
 
         // Poll async image load — guard dropped before mutable calls
         let load_result = self.loading.lock().unwrap().take();
-        if let Some(result) = load_result {
-            if result.index == self.current_index {
-                if let Some(color_img) = result.image {
-                    let tex =
-                        ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
-                    self.current_texture = Some(tex);
-                    // Immediately start preloading the next image (always,
-                    // not just during slideshows — makes manual navigation instant too).
-                    if !self.entries.is_empty() {
-                        let len = self.entries.len();
-                        let next = (self.current_index + 1) % len;
-                        self.start_preload(next);
-                    }
-                } else if let Some(err) = result.error {
-                    self.set_error_status(format!("Error: {err}"));
+        if let Some(result) = load_result
+            && result.index == self.current_index
+        {
+            if let Some(color_img) = result.image {
+                let tex =
+                    ctx.load_texture("current_image", color_img, egui::TextureOptions::LINEAR);
+                self.current_texture = Some(tex);
+                // Immediately start preloading the next image (always,
+                // not just during slideshows — makes manual navigation instant too).
+                if !self.entries.is_empty() {
+                    let len = self.entries.len();
+                    let next = (self.current_index + 1) % len;
+                    self.start_preload(next);
                 }
+            } else if let Some(err) = result.error {
+                self.set_error_status(format!("Error: {err}"));
             }
         }
 
         // Promote completed preload into a ready texture.
         let preload_result = self.preload_loading.lock().unwrap().take();
-        if let Some(result) = preload_result {
-            if Some(result.index) == self.preload_index {
-                if let Some(color_img) = result.image {
-                    let tex =
-                        ctx.load_texture("preload_image", color_img, egui::TextureOptions::LINEAR);
-                    self.preload_texture = Some(tex);
-                }
-            }
+        if let Some(result) = preload_result
+            && Some(result.index) == self.preload_index
+            && let Some(color_img) = result.image
+        {
+            let tex = ctx.load_texture("preload_image", color_img, egui::TextureOptions::LINEAR);
+            self.preload_texture = Some(tex);
         }
 
         // Poll background rotate/flip result
@@ -869,11 +882,7 @@ impl eframe::App for KadrApp {
         };
         for (idx, img) in thumb_done {
             self.thumb_pending.remove(&idx);
-            let tex = ctx.load_texture(
-                format!("thumb_{idx}"),
-                img,
-                egui::TextureOptions::LINEAR,
-            );
+            let tex = ctx.load_texture(format!("thumb_{idx}"), img, egui::TextureOptions::LINEAR);
             self.thumb_textures.put(idx, tex);
         }
 
@@ -945,11 +954,11 @@ impl eframe::App for KadrApp {
                         .ok()
                     });
                     if let Some(cmd) = advance_cmd {
-                        if let Some(v) = cmd.zoom_target {
-                            if let Some(tex) = &self.current_texture {
-                                let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                                self.viewer_state.apply_lua_zoom(v, sz, vp);
-                            }
+                        if let Some(v) = cmd.zoom_target
+                            && let Some(tex) = &self.current_texture
+                        {
+                            let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                            self.viewer_state.apply_lua_zoom(v, sz, vp);
                         }
                         apply_lua_cmd(&mut self.viewer_state, &cmd);
                     }
@@ -995,11 +1004,11 @@ impl eframe::App for KadrApp {
                 .ok()
             });
             if let Some(cmd) = interval_cmd {
-                if let Some(v) = cmd.zoom_target {
-                    if let Some(tex) = &self.current_texture {
-                        let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
-                        self.viewer_state.apply_lua_zoom(v, sz, vp);
-                    }
+                if let Some(v) = cmd.zoom_target
+                    && let Some(tex) = &self.current_texture
+                {
+                    let sz = Vec2::new(tex.size()[0] as f32, tex.size()[1] as f32);
+                    self.viewer_state.apply_lua_zoom(v, sz, vp);
                 }
                 apply_lua_cmd(&mut self.viewer_state, &cmd);
             }
@@ -1034,19 +1043,17 @@ impl eframe::App for KadrApp {
             let is_video = !self.entries.is_empty()
                 && self.entries[self.current_index].media_type == MediaType::Video;
             if !is_video {
-            let (tex, size) = if let Some(t) = self.current_texture.clone() {
-                let s = Vec2::new(t.size()[0] as f32, t.size()[1] as f32);
-                (t, s)
-            } else if let Some(t) = self.prev_texture.clone() {
-                (t, self.prev_image_size)
-            } else {
-                return;
-            };
-            if self.current_texture.is_some() {
-                let prev_clone = self.prev_texture.clone();
-                let transition = prev_clone
-                    .as_ref()
-                    .map(|p| TransitionData {
+                let (tex, size) = if let Some(t) = self.current_texture.clone() {
+                    let s = Vec2::new(t.size()[0] as f32, t.size()[1] as f32);
+                    (t, s)
+                } else if let Some(t) = self.prev_texture.clone() {
+                    (t, self.prev_image_size)
+                } else {
+                    return;
+                };
+                if self.current_texture.is_some() {
+                    let prev_clone = self.prev_texture.clone();
+                    let transition = prev_clone.as_ref().map(|p| TransitionData {
                         prev_texture: p,
                         prev_size: self.prev_image_size,
                         prev_zoom: self.prev_zoom,
@@ -1055,83 +1062,92 @@ impl eframe::App for KadrApp {
                         prev_opacity: self.prev_opacity,
                         t: self.transition_t,
                     });
-                show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
-            } else {
-                // New image hasn't finished loading yet — keep the outgoing
-                // image frozen at the zoom/pan it had when the transition
-                // began, instead of drawing it through viewer_state (already
-                // reset for the incoming image), which would snap it back to
-                // fit-zoom for a few frames.
-                let mut frozen = ViewerState::frozen(self.prev_zoom, self.prev_offset, self.prev_lua_pan, self.prev_opacity);
-                show_viewer(ui, &tex, &mut frozen, size, bg, None);
-            }
-            return;
+                    show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
+                } else {
+                    // New image hasn't finished loading yet — keep the outgoing
+                    // image frozen at the zoom/pan it had when the transition
+                    // began, instead of drawing it through viewer_state (already
+                    // reset for the incoming image), which would snap it back to
+                    // fit-zoom for a few frames.
+                    let mut frozen = ViewerState::frozen(
+                        self.prev_zoom,
+                        self.prev_offset,
+                        self.prev_lua_pan,
+                        self.prev_opacity,
+                    );
+                    show_viewer(ui, &tex, &mut frozen, size, bg, None);
+                }
+                return;
             } // end !is_video
         }
 
         egui::Panel::top("toolbar")
-            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
-                left: 14,
-                right: 14,
-                top: 10,
-                bottom: 8,
-            }))
-            .show_inside(ui, |ui| {
-            let sort_mode = self.config.viewer.sort_mode.clone();
-            let toolbar_resp = show_toolbar(
-                ui,
-                &sort_mode,
-                self.config.filter_images,
-                self.config.filter_videos,
-                self.config.scan_subfolders,
-                self.slideshow.active,
-                self.entries.len(),
-                if self.entries.is_empty() {
-                    None
-                } else {
-                    Some(self.current_index)
-                },
-            );
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 10,
+                        bottom: 8,
+                    }),
+            )
+            .show(ui, |ui| {
+                let sort_mode = self.config.viewer.sort_mode.clone();
+                let toolbar_resp = show_toolbar(
+                    ui,
+                    &sort_mode,
+                    self.config.filter_images,
+                    self.config.filter_videos,
+                    self.config.scan_subfolders,
+                    self.slideshow.active,
+                    self.entries.len(),
+                    if self.entries.is_empty() {
+                        None
+                    } else {
+                        Some(self.current_index)
+                    },
+                );
 
-            if toolbar_resp.open_folder {
-                self.pick_folder();
-            }
-            if toolbar_resp.open_file {
-                self.pick_file();
-            }
-            if toolbar_resp.combine {
-                self.combine_dialog.open = true;
-            }
-            if toolbar_resp.settings {
-                self.settings_dialog.open = true;
-            }
-            if toolbar_resp.slideshow {
-                self.slideshow.toggle();
-            }
+                if toolbar_resp.open_folder {
+                    self.pick_folder();
+                }
+                if toolbar_resp.open_file {
+                    self.pick_file();
+                }
+                if toolbar_resp.combine {
+                    self.combine_dialog.open = true;
+                }
+                if toolbar_resp.settings {
+                    self.settings_dialog.open = true;
+                }
+                if toolbar_resp.slideshow {
+                    self.slideshow.toggle();
+                }
 
-            if toolbar_resp.toggle_images {
-                self.config.filter_images = !self.config.filter_images;
-                if let Some(folder) = self.config.last_path.clone() {
-                    self.open_path(folder);
+                if toolbar_resp.toggle_images {
+                    self.config.filter_images = !self.config.filter_images;
+                    if let Some(folder) = self.config.last_path.clone() {
+                        self.open_path(folder);
+                    }
                 }
-            }
-            if toolbar_resp.toggle_videos {
-                self.config.filter_videos = !self.config.filter_videos;
-                if let Some(folder) = self.config.last_path.clone() {
-                    self.open_path(folder);
+                if toolbar_resp.toggle_videos {
+                    self.config.filter_videos = !self.config.filter_videos;
+                    if let Some(folder) = self.config.last_path.clone() {
+                        self.open_path(folder);
+                    }
                 }
-            }
-            if toolbar_resp.toggle_subfolders {
-                self.config.scan_subfolders = !self.config.scan_subfolders;
-                if let Some(folder) = self.config.last_path.clone() {
-                    self.open_path(folder);
+                if toolbar_resp.toggle_subfolders {
+                    self.config.scan_subfolders = !self.config.scan_subfolders;
+                    if let Some(folder) = self.config.last_path.clone() {
+                        self.open_path(folder);
+                    }
                 }
-            }
-            if let Some(mode) = toolbar_resp.sort_changed {
-                self.config.viewer.sort_mode = mode;
-                self.apply_sort();
-            }
-        });
+                if let Some(mode) = toolbar_resp.sort_changed {
+                    self.config.viewer.sort_mode = mode;
+                    self.apply_sort();
+                }
+            });
 
         if self.config.show_thumbnails && !self.entries.is_empty() {
             let thumb_height = self.config.thumbnail_size + 10.0;
@@ -1141,13 +1157,17 @@ impl eframe::App for KadrApp {
             egui::Panel::bottom("thumbnails")
                 .exact_size(self.thumb_panel_height())
                 .resizable(false)
-                .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: THUMB_PANEL_MARGIN_TOP as i8,
-                    bottom: THUMB_PANEL_MARGIN_BOTTOM as i8,
-                }))
-                .show_inside(ui, |ui| {
+                .frame(
+                    egui::Frame::default()
+                        .fill(theme::BG)
+                        .inner_margin(egui::Margin {
+                            left: 14,
+                            right: 14,
+                            top: THUMB_PANEL_MARGIN_TOP as i8,
+                            bottom: THUMB_PANEL_MARGIN_BOTTOM as i8,
+                        }),
+                )
+                .show(ui, |ui| {
                     let strip = ThumbnailStrip {
                         thumb_size,
                         height: thumb_height,
@@ -1168,7 +1188,8 @@ impl eframe::App for KadrApp {
                             })
                             .collect();
                         let relative_current = current_index - start;
-                        strip.show(ui, &thumb_entries, relative_current)
+                        strip
+                            .show(ui, &thumb_entries, relative_current)
                             .clicked_index
                             .map(|i| i + start)
                     };
@@ -1180,13 +1201,17 @@ impl eframe::App for KadrApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(theme::BG).inner_margin(egui::Margin {
-                left: 14,
-                right: 14,
-                top: 0,
-                bottom: 8,
-            }))
-            .show_inside(ui, |ui| {
+            .frame(
+                egui::Frame::default()
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin {
+                        left: 14,
+                        right: 14,
+                        top: 0,
+                        bottom: 8,
+                    }),
+            )
+            .show(ui, |ui| {
                 if self.entries.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(
@@ -1227,31 +1252,47 @@ impl eframe::App for KadrApp {
                             let dh = th * scale;
                             let center = avail.center();
                             let img_rect = egui::Rect::from_center_size(center, vec2(dw, dh));
-                            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                            let uv = egui::Rect::from_min_max(
+                                egui::pos2(0.0, 0.0),
+                                egui::pos2(1.0, 1.0),
+                            );
                             ui.painter().image(tex.id(), img_rect, uv, Color32::WHITE);
                         }
                     } else {
                         // Waiting for first frame
-                        ui.centered_and_justified(|ui| { ui.spinner(); });
+                        ui.centered_and_justified(|ui| {
+                            ui.spinner();
+                        });
                     }
 
                     // Controls overlay
                     let (pos, dur, paused, vol) = if let Some(vc) = &self.video_ctx {
-                        (vc.get_position(), vc.get_duration(), vc.is_paused(), vc.get_volume())
+                        (
+                            vc.get_position(),
+                            vc.get_duration(),
+                            vc.is_paused(),
+                            vc.get_volume(),
+                        )
                     } else {
                         (0.0, 0.0, true, self.video_volume)
                     };
 
                     match show_video_controls(ui, avail, paused, pos, dur, vol) {
                         ControlsAction::PlayPause => {
-                            if let Some(vc) = &self.video_ctx { vc.play_pause(); }
+                            if let Some(vc) = &self.video_ctx {
+                                vc.play_pause();
+                            }
                         }
                         ControlsAction::SeekTo(s) => {
-                            if let Some(vc) = &self.video_ctx { vc.seek_absolute(s); }
+                            if let Some(vc) = &self.video_ctx {
+                                vc.seek_absolute(s);
+                            }
                         }
                         ControlsAction::SetVolume(v) => {
                             self.video_volume = v;
-                            if let Some(vc) = &self.video_ctx { vc.set_volume(v); }
+                            if let Some(vc) = &self.video_ctx {
+                                vc.set_volume(v);
+                            }
                         }
                         ControlsAction::None => {}
                     }
@@ -1275,16 +1316,15 @@ impl eframe::App for KadrApp {
                     if self.current_texture.is_some() {
                         // Only render crossfade when both images are present.
                         let prev_clone = self.prev_texture.clone();
-                        let transition = prev_clone.as_ref()
-                            .map(|p| TransitionData {
-                                prev_texture: p,
-                                prev_size:    self.prev_image_size,
-                                prev_zoom:    self.prev_zoom,
-                                prev_offset:  self.prev_offset,
-                                prev_lua_pan: self.prev_lua_pan,
-                                prev_opacity: self.prev_opacity,
-                                t:            self.transition_t,
-                            });
+                        let transition = prev_clone.as_ref().map(|p| TransitionData {
+                            prev_texture: p,
+                            prev_size: self.prev_image_size,
+                            prev_zoom: self.prev_zoom,
+                            prev_offset: self.prev_offset,
+                            prev_lua_pan: self.prev_lua_pan,
+                            prev_opacity: self.prev_opacity,
+                            t: self.transition_t,
+                        });
                         show_viewer(ui, &tex, &mut self.viewer_state, size, bg, transition);
                     } else {
                         // New image hasn't finished loading yet — keep the outgoing
@@ -1292,11 +1332,18 @@ impl eframe::App for KadrApp {
                         // began, instead of drawing it through viewer_state (already
                         // reset for the incoming image), which would snap it back to
                         // fit-zoom for a few frames.
-                        let mut frozen = ViewerState::frozen(self.prev_zoom, self.prev_offset, self.prev_lua_pan, self.prev_opacity);
+                        let mut frozen = ViewerState::frozen(
+                            self.prev_zoom,
+                            self.prev_offset,
+                            self.prev_lua_pan,
+                            self.prev_opacity,
+                        );
                         show_viewer(ui, &tex, &mut frozen, size, bg, None);
                     }
                 } else {
-                    ui.centered_and_justified(|ui| { ui.spinner(); });
+                    ui.centered_and_justified(|ui| {
+                        ui.spinner();
+                    });
                 }
 
                 // Filename overlay — pill background for readability
@@ -1308,7 +1355,10 @@ impl eframe::App for KadrApp {
                     24.0
                 };
                 {
-                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("overlay")));
+                    let painter = ctx.layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("overlay"),
+                    ));
                     let font_id = egui::FontId::proportional(13.0);
                     // Approximate pill width (avg ~7px per char at 13pt)
                     let approx_w = (file_name.chars().count() as f32 * 7.2).max(60.0);
@@ -1322,7 +1372,11 @@ impl eframe::App for KadrApp {
                         egui::pos2(x0, y_bottom - text_h - 2.0),
                         egui::vec2(approx_w + 16.0, text_h + 6.0),
                     );
-                    painter.rect_filled(pill_rect, egui::CornerRadius::same(8), theme::overlay_bg());
+                    painter.rect_filled(
+                        pill_rect,
+                        egui::CornerRadius::same(8),
+                        theme::overlay_bg(),
+                    );
                     painter.text(
                         egui::pos2(x0 + 8.0, y_bottom),
                         egui::Align2::LEFT_BOTTOM,
@@ -1335,7 +1389,11 @@ impl eframe::App for KadrApp {
                 // Status overlay — check elapsed before borrowing mutably
                 let should_clear = match &self.status_msg {
                     Some((msg, since, is_error)) if since.elapsed().as_secs_f32() < 2.0 => {
-                        let color = if *is_error { theme::ERROR_TEXT } else { theme::SUCCESS };
+                        let color = if *is_error {
+                            theme::ERROR_TEXT
+                        } else {
+                            theme::SUCCESS
+                        };
                         ctx.layer_painter(egui::LayerId::new(
                             egui::Order::Foreground,
                             egui::Id::new("status_overlay"),
@@ -1361,17 +1419,19 @@ impl eframe::App for KadrApp {
         // Dialogs
         // Poll combine background thread result
         if self.combine_dialog.running {
-            if let Ok(mut slot) = self.combine_result_rx.lock() {
-                if let Some(res) = slot.take() {
-                    self.combine_dialog.running = false;
-                    self.combine_dialog.result_msg = Some(match res {
-                        Ok(r) => format!(
-                            "Done: {} copied, {} renamed, {} errors",
-                            r.copied, r.renamed, r.errors.len()
-                        ),
-                        Err(e) => format!("Error: {e}"),
-                    });
-                }
+            if let Ok(mut slot) = self.combine_result_rx.lock()
+                && let Some(res) = slot.take()
+            {
+                self.combine_dialog.running = false;
+                self.combine_dialog.result_msg = Some(match res {
+                    Ok(r) => format!(
+                        "Done: {} copied, {} renamed, {} errors",
+                        r.copied,
+                        r.renamed,
+                        r.errors.len()
+                    ),
+                    Err(e) => format!("Error: {e}"),
+                });
             }
             ctx.request_repaint();
         }
@@ -1399,8 +1459,7 @@ impl eframe::App for KadrApp {
                 let result_tx = Arc::clone(&self.combine_result_rx);
                 let ctx_clone = ctx.clone();
                 thread::spawn(move || {
-                    let res = combine_folders(&sources, &dest, progress)
-                        .map_err(|e| e.to_string());
+                    let res = combine_folders(&sources, &dest, progress).map_err(|e| e.to_string());
                     if let Ok(mut slot) = result_tx.lock() {
                         *slot = Some(res);
                     }
@@ -1476,10 +1535,8 @@ impl eframe::App for KadrApp {
                     .update_interval(self.settings_dialog.slideshow_interval);
                 self.slideshow.transition_secs = self.settings_dialog.slideshow_transition;
 
-                if needs_rescan {
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
-                    }
+                if needs_rescan && let Some(folder) = self.config.last_path.clone() {
+                    self.open_path(folder);
                 }
 
                 // Recompile Lua script, show error in dialog if invalid
@@ -1623,7 +1680,6 @@ fn apply_theme(ctx: &egui::Context) {
     );
     ctx.set_global_style(style);
 }
-
 
 fn make_thumbnail(img: &ColorImage, max_size: usize) -> ColorImage {
     let [w, h] = img.size;

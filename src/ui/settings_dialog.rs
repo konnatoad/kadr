@@ -159,9 +159,9 @@ impl SettingsDialog {
                     return;
                 }
                 for key in all_known_keys() {
-                    if input.key_pressed(key) {
-                        if let Some(sk) = key_to_serializable(key) {
-                            if let Some(rebind_action) = self.rebinding.take() {
+                    if input.key_pressed(key)
+                        && let Some(sk) = key_to_serializable(key)
+                            && let Some(rebind_action) = self.rebinding.take() {
                                 bindings.0.insert(
                                     rebind_action,
                                     KeyBinding {
@@ -172,8 +172,6 @@ impl SettingsDialog {
                                     },
                                 );
                             }
-                        }
-                    }
                 }
             });
         } else if ctx.input(|input| input.key_pressed(Key::Escape)) {

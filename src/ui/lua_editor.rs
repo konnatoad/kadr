@@ -5,6 +5,7 @@ use egui::{
 
 use crate::ui::widgets::{self, theme};
 
+#[derive(Default)]
 pub struct LuaEditor {
     pub open: bool,
     pub code: String,
@@ -41,17 +42,6 @@ function on_interval(ctx)
 end
 "#;
 
-impl Default for LuaEditor {
-    fn default() -> Self {
-        Self {
-            open: false,
-            code: String::new(),
-            error: None,
-            show_vars: false,
-            confirm_load_example: false,
-        }
-    }
-}
 
 impl LuaEditor {
     pub fn open_with(&mut self, code: &str) {

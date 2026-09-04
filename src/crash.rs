@@ -22,7 +22,6 @@
 //! stderr that a windowed build doesn't have, then `abort()`), or a C library
 //! calling `exit()`. For those, [`Breadcrumb`] leaves a note on disk saying
 //! what kadr was doing; if it's still there next launch, `install()` shows it.
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -85,7 +84,7 @@ fn take_breadcrumbs() -> Option<String> {
             .unwrap_or(std::time::UNIX_EPOCH);
         let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
         let _ = std::fs::remove_file(entry.path());
-        if newest.as_ref().map_or(true, |(t, _)| when >= *t) {
+        if newest.as_ref().is_none_or(|(t, _)| when >= *t) {
             newest = Some((when, text));
         }
     }
@@ -214,27 +213,27 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
 
     unsafe {
         // Pull the few fields we need out of the EXCEPTION_RECORD up front.
-        let (code, addr, av_kind, av_addr) = if info.is_null() || (*info).ExceptionRecord.is_null() {
+        let (code, addr, av_kind, av_addr) = if info.is_null() || (*info).ExceptionRecord.is_null()
+        {
             (0u32, 0usize, None, 0usize)
         } else {
             let rec = &*(*info).ExceptionRecord;
-            let code = rec.ExceptionCode as u32;
+            let code = rec.ExceptionCode;
             let addr = rec.ExceptionAddress as usize;
             // For access violations / in-page errors, ExceptionInformation holds
             // [operation, faulting-address], operation 0=read 1=write 8=exec.
-            let (kind, bad) = if matches!(code, 0xC000_0005 | 0xC000_0006)
-                && rec.NumberParameters >= 2
-            {
-                let kind = match rec.ExceptionInformation[0] {
-                    0 => "read from",
-                    1 => "write to",
-                    8 => "execute (DEP) at",
-                    _ => "access",
+            let (kind, bad) =
+                if matches!(code, 0xC000_0005 | 0xC000_0006) && rec.NumberParameters >= 2 {
+                    let kind = match rec.ExceptionInformation[0] {
+                        0 => "read from",
+                        1 => "write to",
+                        8 => "execute (DEP) at",
+                        _ => "access",
+                    };
+                    (Some(kind), rec.ExceptionInformation[1])
+                } else {
+                    (None, 0)
                 };
-                (Some(kind), rec.ExceptionInformation[1])
-            } else {
-                (None, 0)
-            };
             (code, addr, kind, bad)
         };
 
@@ -458,7 +457,7 @@ fn show_popup(title: &str, text: &str) {
     unsafe {
         use std::os::windows::ffi::OsStrExt;
         use winapi::um::winuser::{
-            MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL, MB_TOPMOST,
+            MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_SYSTEMMODAL, MB_TOPMOST, MessageBoxW,
         };
 
         let text: Vec<u16> = std::ffi::OsStr::new(text)
@@ -500,7 +499,9 @@ fn now_parts() -> (u16, u16, u16, u16, u16, u16) {
         use winapi::um::sysinfoapi::GetLocalTime;
         let mut st: SYSTEMTIME = core::mem::zeroed();
         GetLocalTime(&mut st);
-        (st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond)
+        (
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+        )
     }
 }
 
