@@ -1,8 +1,8 @@
-use egui::{Color32, Painter, Rect, RichText, Stroke, Ui};
-
 use crate::fs::sorter::SortMode;
 use crate::ui::widgets::{self, theme};
+use egui::{Color32, Painter, Rect, RichText, Stroke, Ui};
 
+#[derive(Default)]
 pub struct ToolbarResponse {
     pub open_folder: bool,
     pub open_file: bool,
@@ -15,22 +15,7 @@ pub struct ToolbarResponse {
     pub slideshow: bool,
 }
 
-impl Default for ToolbarResponse {
-    fn default() -> Self {
-        Self {
-            open_folder: false,
-            open_file: false,
-            combine: false,
-            settings: false,
-            sort_changed: None,
-            toggle_images: false,
-            toggle_videos: false,
-            toggle_subfolders: false,
-            slideshow: false,
-        }
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 pub fn show_toolbar(
     ui: &mut Ui,
     current_sort: &SortMode,
@@ -49,8 +34,12 @@ pub fn show_toolbar(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
 
-                if widgets::icon_button(ui, icon_folder, "Open Folder").clicked() { resp.open_folder = true; }
-                if widgets::icon_button(ui, icon_file, "Open File").clicked()     { resp.open_file   = true; }
+                if widgets::icon_button(ui, icon_folder, "Open Folder").clicked() {
+                    resp.open_folder = true;
+                }
+                if widgets::icon_button(ui, icon_file, "Open File").clicked() {
+                    resp.open_file = true;
+                }
 
                 widgets::vsep(ui);
 
@@ -59,7 +48,10 @@ pub fn show_toolbar(
                     .width(168.0)
                     .show_ui(ui, |ui| {
                         for mode in SortMode::all() {
-                            if ui.selectable_label(current_sort == mode, mode.label()).clicked() {
+                            if ui
+                                .selectable_label(current_sort == mode, mode.label())
+                                .clicked()
+                            {
                                 resp.sort_changed = Some(mode.clone());
                             }
                         }
@@ -67,9 +59,15 @@ pub fn show_toolbar(
 
                 widgets::vsep(ui);
 
-                if widgets::pill_toggle(ui, "Images", filter_images).clicked()       { resp.toggle_images = true; }
-                if widgets::pill_toggle(ui, "Videos", filter_videos).clicked()       { resp.toggle_videos = true; }
-                if widgets::pill_toggle(ui, "Subfolders", scan_subfolders).clicked() { resp.toggle_subfolders = true; }
+                if widgets::pill_toggle(ui, "Images", filter_images).clicked() {
+                    resp.toggle_images = true;
+                }
+                if widgets::pill_toggle(ui, "Videos", filter_videos).clicked() {
+                    resp.toggle_videos = true;
+                }
+                if widgets::pill_toggle(ui, "Subfolders", scan_subfolders).clicked() {
+                    resp.toggle_subfolders = true;
+                }
 
                 widgets::vsep(ui);
 
@@ -80,17 +78,23 @@ pub fn show_toolbar(
                     .fill(theme::error_fill(25))
                     .stroke(Stroke::new(1.0, theme::error_fill(110)))
                     .corner_radius(theme::RADIUS_SM);
-                    if ui.add(btn).clicked() { resp.slideshow = true; }
+                    if ui.add(btn).clicked() {
+                        resp.slideshow = true;
+                    }
                 } else if widgets::icon_button(ui, icon_slideshow, "Slideshow").clicked() {
                     resp.slideshow = true;
                 }
 
                 widgets::vsep(ui);
-                if widgets::icon_button(ui, icon_combine, "Combine").clicked() { resp.combine = true; }
+                if widgets::icon_button(ui, icon_combine, "Combine").clicked() {
+                    resp.combine = true;
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if widgets::icon_only_button(ui, icon_gear, 28.0).clicked() { resp.settings = true; }
+                    if widgets::icon_only_button(ui, icon_gear, 28.0).clicked() {
+                        resp.settings = true;
+                    }
 
                     if let Some(idx) = current_index {
                         widgets::vsep(ui);
@@ -135,7 +139,10 @@ fn icon_combine(p: &Painter, r: Rect, col: Color32) {
     let stroke = Stroke::new(1.3, col);
     let s = r.width() * 0.62;
     let r1 = Rect::from_min_size(r.min, egui::vec2(s, s));
-    let r2 = Rect::from_min_size(r.min + egui::vec2(r.width() - s, r.height() - s), egui::vec2(s, s));
+    let r2 = Rect::from_min_size(
+        r.min + egui::vec2(r.width() - s, r.height() - s),
+        egui::vec2(s, s),
+    );
     p.rect_stroke(r1, 2.0, stroke, egui::StrokeKind::Outside);
     p.rect_stroke(r2, 2.0, stroke, egui::StrokeKind::Outside);
 }

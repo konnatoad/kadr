@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use mlua::{Function, Lua, Result as LuaResult, Table};
 use std::path::Path;
 
@@ -20,17 +20,19 @@ pub struct SlideContext {
     pub fit_scale: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct SlideCommand {
-    pub next_index:   Option<usize>,
+    pub next_index: Option<usize>,
     pub new_interval: Option<f64>,
-    pub zoom_target:  Option<f32>,
+    pub zoom_target: Option<f32>,
     pub zoom_duration: Option<f32>,
-    pub pan_x:    Option<f32>,
-    pub pan_y:    Option<f32>,
-    pub opacity:  Option<f32>,
+    pub pan_x: Option<f32>,
+    pub pan_y: Option<f32>,
+    pub opacity: Option<f32>,
 }
 
+#[allow(dead_code)]
 impl LuaSlideshowScript {
     pub fn load(path: &Path) -> Result<Self> {
         let source = std::fs::read_to_string(path)?;
@@ -42,24 +44,34 @@ impl LuaSlideshowScript {
             return Err(anyhow!("empty script"));
         }
         let lua = Lua::new();
-        lua.load(source).exec().map_err(|e| anyhow!("Lua error: {e}"))?;
+        lua.load(source)
+            .exec()
+            .map_err(|e| anyhow!("Lua error: {e}"))?;
 
         let has_on_advance = lua.globals().get::<Function>("on_advance").is_ok();
         let has_on_interval = lua.globals().get::<Function>("on_interval").is_ok();
 
-        Ok(Self { lua, has_on_advance, has_on_interval })
+        Ok(Self {
+            lua,
+            has_on_advance,
+            has_on_interval,
+        })
     }
 
     pub fn on_advance(&self, ctx: &SlideContext) -> Result<SlideCommand> {
         if !self.has_on_advance {
             return Ok(SlideCommand::default());
         }
-        let func: Function = self.lua.globals()
+        let func: Function = self
+            .lua
+            .globals()
             .get("on_advance")
             .map_err(|e| anyhow!("Lua: {e}"))?;
         let table = self.lua.create_table().map_err(|e| anyhow!("Lua: {e}"))?;
         fill_table(&table, ctx).map_err(|e| anyhow!("Lua: {e}"))?;
-        let result: Table = func.call(table).map_err(|e| anyhow!("Lua on_advance: {e}"))?;
+        let result: Table = func
+            .call(table)
+            .map_err(|e| anyhow!("Lua on_advance: {e}"))?;
         Ok(parse_command(&result))
     }
 
@@ -67,12 +79,16 @@ impl LuaSlideshowScript {
         if !self.has_on_interval {
             return Ok(SlideCommand::default());
         }
-        let func: Function = self.lua.globals()
+        let func: Function = self
+            .lua
+            .globals()
             .get("on_interval")
             .map_err(|e| anyhow!("Lua: {e}"))?;
         let table = self.lua.create_table().map_err(|e| anyhow!("Lua: {e}"))?;
         fill_table(&table, ctx).map_err(|e| anyhow!("Lua: {e}"))?;
-        let result: Table = func.call(table).map_err(|e| anyhow!("Lua on_interval: {e}"))?;
+        let result: Table = func
+            .call(table)
+            .map_err(|e| anyhow!("Lua on_interval: {e}"))?;
         Ok(parse_command(&result))
     }
 }
@@ -89,12 +105,12 @@ fn fill_table(table: &Table, ctx: &SlideContext) -> LuaResult<()> {
 fn parse_command(table: &Table) -> SlideCommand {
     let f = |key| -> Option<f32> { table.get::<f64>(key).ok().map(|v| v as f32) };
     SlideCommand {
-        next_index:   table.get("next_index").ok(),
+        next_index: table.get("next_index").ok(),
         new_interval: table.get("new_interval").ok(),
-        zoom_target:  f("zoom_target"),
+        zoom_target: f("zoom_target"),
         zoom_duration: f("zoom_duration"),
-        pan_x:   f("pan_x"),
-        pan_y:   f("pan_y"),
+        pan_x: f("pan_x"),
+        pan_y: f("pan_y"),
         opacity: f("opacity"),
     }
 }

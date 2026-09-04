@@ -59,7 +59,7 @@ impl SlideshowEngine {
         self.phase_start = now;
         self.slide_start = now;
     }
-
+    #[allow(dead_code)]
     pub fn start(&mut self) {
         self.active = true;
         self.phase = Phase::Holding;
@@ -68,6 +68,7 @@ impl SlideshowEngine {
         self.slide_start = now;
     }
 
+    #[allow(dead_code)]
     pub fn stop(&mut self) {
         self.active = false;
         self.phase = Phase::Holding;
@@ -104,6 +105,7 @@ impl SlideshowEngine {
         }
     }
 
+    #[allow(dead_code)]
     /// 0 → 1 progress within the current *hold* phase (used by UI progress bars).
     pub fn progress(&self) -> f32 {
         if !self.active {
@@ -131,6 +133,7 @@ impl SlideshowEngine {
         self.interval.as_secs_f64()
     }
 
+    #[allow(dead_code)]
     pub fn in_transition(&self) -> bool {
         self.phase == Phase::Transitioning
     }

@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use anyhow::{Result, anyhow};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use std::path::Path;
@@ -25,6 +26,7 @@ fn guard_pixels(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub struct LoadedImage {
     pub image: DynamicImage,
     pub preview: egui::ColorImage,
@@ -76,7 +78,8 @@ impl LoadedImage {
 }
 
 fn load_standard(path: &Path) -> Result<DynamicImage> {
-    let ext = path.extension()
+    let ext = path
+        .extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase());
 
@@ -109,17 +112,19 @@ fn load_standard(path: &Path) -> Result<DynamicImage> {
 /// Decode a JPEG using mozjpeg (libjpeg-turbo fork, bundled — no system install needed).
 /// 3-5× faster than the pure-Rust jpeg-decoder used by the `image` crate.
 fn load_jpeg_turbo(data: &[u8]) -> Result<DynamicImage> {
-    let decomp = mozjpeg::Decompress::new_mem(data)
-        .map_err(|e| anyhow::anyhow!("mozjpeg init: {e}"))?;
+    let decomp =
+        mozjpeg::Decompress::new_mem(data).map_err(|e| anyhow::anyhow!("mozjpeg init: {e}"))?;
 
-    let width  = decomp.width()  as u32;
+    let width = decomp.width() as u32;
     let height = decomp.height() as u32;
     guard_pixels(width, height)?;
 
-    let mut rgb = decomp.rgb()
+    let mut rgb = decomp
+        .rgb()
         .map_err(|e| anyhow::anyhow!("mozjpeg rgb: {e}"))?;
 
-    let pixels: Vec<u8> = rgb.read_scanlines_flat()
+    let pixels: Vec<u8> = rgb
+        .read_scanlines::<u8>()
         .map_err(|e| anyhow::anyhow!("mozjpeg: read_scanlines: {e}"))?;
 
     let buf = image::RgbImage::from_raw(width, height, pixels)
@@ -232,7 +237,7 @@ pub fn load_jpeg_from_bytes(data: &[u8]) -> Result<LoadedImage> {
     let image = load_jpeg_turbo(data)?;
 
     const MAX_TEX_DIM: u32 = 2560;
-    let width  = image.width();
+    let width = image.width();
     let height = image.height();
 
     let preview_rgba = if width > MAX_TEX_DIM || height > MAX_TEX_DIM {
@@ -242,11 +247,19 @@ pub fn load_jpeg_from_bytes(data: &[u8]) -> Result<LoadedImage> {
     };
 
     let preview = egui::ColorImage::from_rgba_unmultiplied(
-        [preview_rgba.width() as usize, preview_rgba.height() as usize],
+        [
+            preview_rgba.width() as usize,
+            preview_rgba.height() as usize,
+        ],
         &preview_rgba,
     );
 
-    Ok(LoadedImage { image, preview, width, height })
+    Ok(LoadedImage {
+        image,
+        preview,
+        width,
+        height,
+    })
 }
 
 /// Scan the JPEG byte stream for an APP1/Exif segment and return a slice of

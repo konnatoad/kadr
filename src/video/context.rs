@@ -34,7 +34,11 @@ unsafe impl Send for VideoContext {}
 unsafe impl Sync for VideoContext {}
 
 impl VideoContext {
-    pub fn new(path: &std::path::Path, egui_ctx: egui::Context, loop_playback: bool) -> anyhow::Result<Self> {
+    pub fn new(
+        path: &std::path::Path,
+        egui_ctx: egui::Context,
+        loop_playback: bool,
+    ) -> anyhow::Result<Self> {
         let path_str = path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("video path is not valid UTF-8"))?;
@@ -45,11 +49,11 @@ impl VideoContext {
             anyhow::ensure!(!handle.is_null(), "mpv_create returned null");
 
             // Must be set before mpv_initialize
-            mpv_set_property_string(handle, b"vo\0".as_ptr() as _, b"libmpv\0".as_ptr() as _);
-            mpv_set_property_string(handle, b"hwdec\0".as_ptr() as _, b"auto-safe\0".as_ptr() as _);
-            mpv_set_property_string(handle, b"keep-open\0".as_ptr() as _, b"yes\0".as_ptr() as _);
+            mpv_set_property_string(handle, c"vo".as_ptr() as _, c"libmpv".as_ptr() as _);
+            mpv_set_property_string(handle, c"hwdec".as_ptr() as _, c"auto-safe".as_ptr() as _);
+            mpv_set_property_string(handle, c"keep-open".as_ptr() as _, c"yes".as_ptr() as _);
             // Suppress terminal output
-            mpv_set_property_string(handle, b"terminal\0".as_ptr() as _, b"no\0".as_ptr() as _);
+            mpv_set_property_string(handle, c"terminal".as_ptr() as _, c"no".as_ptr() as _);
 
             let rc = mpv_initialize(handle);
             if rc < 0 {
@@ -61,20 +65,22 @@ impl VideoContext {
             let api_ptr = MPV_RENDER_API_TYPE_SW.as_ptr() as *mut c_void;
             let mut adv: c_int = 1;
             let mut create_params = [
-                MpvRenderParam { type_: MPV_RENDER_PARAM_API_TYPE, data: api_ptr },
+                MpvRenderParam {
+                    type_: MPV_RENDER_PARAM_API_TYPE,
+                    data: api_ptr,
+                },
                 MpvRenderParam {
                     type_: MPV_RENDER_PARAM_ADVANCED_CONTROL,
                     data: &mut adv as *mut c_int as *mut c_void,
                 },
-                MpvRenderParam { type_: MPV_RENDER_PARAM_INVALID, data: null_mut() },
+                MpvRenderParam {
+                    type_: MPV_RENDER_PARAM_INVALID,
+                    data: null_mut(),
+                },
             ];
 
             let mut render_ctx: *mut MpvRenderCtx = null_mut();
-            let rc = mpv_render_context_create(
-                &mut render_ctx,
-                handle,
-                create_params.as_mut_ptr(),
-            );
+            let rc = mpv_render_context_create(&mut render_ctx, handle, create_params.as_mut_ptr());
             if rc < 0 {
                 mpv_terminate_destroy(handle);
                 anyhow::bail!("mpv_render_context_create error {rc}");
@@ -93,11 +99,7 @@ impl VideoContext {
 
             // ── Load file ─────────────────────────────────────────────────────
             let path_cstr = CString::new(path_str)?;
-            let cmd: [*const i8; 3] = [
-                b"loadfile\0".as_ptr() as _,
-                path_cstr.as_ptr(),
-                null_mut(),
-            ];
+            let cmd: [*const i8; 3] = [c"loadfile".as_ptr() as _, path_cstr.as_ptr(), null_mut()];
             mpv_command(handle, cmd.as_ptr());
 
             let ctx = Self {
@@ -116,9 +118,13 @@ impl VideoContext {
 
     /// Enable or disable looping the current file when it reaches the end.
     pub fn set_loop(&self, enabled: bool) {
-        let value = if enabled { b"inf\0".as_ptr() } else { b"no\0".as_ptr() };
+        let value = if enabled {
+            c"inf".as_ptr()
+        } else {
+            c"no".as_ptr()
+        };
         unsafe {
-            mpv_set_property_string(self.handle, b"loop-file\0".as_ptr() as _, value as _);
+            mpv_set_property_string(self.handle, c"loop-file".as_ptr() as _, value as _);
         }
     }
 
@@ -142,7 +148,7 @@ impl VideoContext {
         self.render_buf.resize(bytes, 0);
 
         let mut size = [w as c_int, h as c_int];
-        let fmt = b"rgba\0";
+        let fmt = c"rgba";
         let stride: usize = w as usize * 4;
 
         let mut params = [
@@ -162,7 +168,10 @@ impl VideoContext {
                 type_: MPV_RENDER_PARAM_SW_POINTER,
                 data: self.render_buf.as_mut_ptr() as *mut c_void,
             },
-            MpvRenderParam { type_: MPV_RENDER_PARAM_INVALID, data: null_mut() },
+            MpvRenderParam {
+                type_: MPV_RENDER_PARAM_INVALID,
+                data: null_mut(),
+            },
         ];
 
         let rc = unsafe { mpv_render_context_render(self.render_ctx, params.as_mut_ptr()) };
@@ -184,11 +193,7 @@ impl VideoContext {
 
     pub fn play_pause(&self) {
         unsafe {
-            let cmd: [*const i8; 3] = [
-                b"cycle\0".as_ptr() as _,
-                b"pause\0".as_ptr() as _,
-                null_mut(),
-            ];
+            let cmd: [*const i8; 3] = [c"cycle".as_ptr() as _, c"pause".as_ptr() as _, null_mut()];
             mpv_command(self.handle, cmd.as_ptr());
         }
     }
@@ -199,9 +204,9 @@ impl VideoContext {
         let Ok(cs) = CString::new(s) else { return };
         unsafe {
             let cmd: [*const i8; 4] = [
-                b"seek\0".as_ptr() as _,
+                c"seek".as_ptr() as _,
                 cs.as_ptr(),
-                b"absolute\0".as_ptr() as _,
+                c"absolute".as_ptr() as _,
                 null_mut(),
             ];
             mpv_command(self.handle, cmd.as_ptr());
@@ -214,9 +219,9 @@ impl VideoContext {
         let Ok(cs) = CString::new(s) else { return };
         unsafe {
             let cmd: [*const i8; 4] = [
-                b"seek\0".as_ptr() as _,
+                c"seek".as_ptr() as _,
                 cs.as_ptr(),
-                b"relative\0".as_ptr() as _,
+                c"relative".as_ptr() as _,
                 null_mut(),
             ];
             mpv_command(self.handle, cmd.as_ptr());
@@ -229,7 +234,7 @@ impl VideoContext {
         unsafe {
             mpv_set_property(
                 self.handle,
-                b"volume\0".as_ptr() as _,
+                c"volume".as_ptr() as _,
                 MPV_FORMAT_DOUBLE,
                 &mut v as *mut f64 as *mut c_void,
             );
@@ -255,7 +260,9 @@ impl VideoContext {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     fn get_f64(&self, name: &str) -> f64 {
-        let Ok(cname) = CString::new(name) else { return 0.0 };
+        let Ok(cname) = CString::new(name) else {
+            return 0.0;
+        };
         let mut val: f64 = 0.0;
         unsafe {
             mpv_get_property(
@@ -269,7 +276,9 @@ impl VideoContext {
     }
 
     fn get_i64(&self, name: &str) -> i64 {
-        let Ok(cname) = CString::new(name) else { return 0 };
+        let Ok(cname) = CString::new(name) else {
+            return 0;
+        };
         let mut val: i64 = 0;
         unsafe {
             mpv_get_property(
