@@ -1,4 +1,4 @@
-use egui::{Color32, RichText, Stroke, Ui};
+use egui::{Color32, RichText, Stroke, Ui, epaint::color};
 
 pub mod theme {
     use egui::Color32;
@@ -176,6 +176,50 @@ pub fn pill_toggle(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
         .stroke(stroke)
         .corner_radius(theme::RADIUS_PILL);
     ui.add(btn)
+}
+
+pub fn pill_checkbox(ui: &mut Ui, value: &mut bool, label: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let mut response = toggle_switch(ui, value);
+        let label_resp = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+        if label_resp.clicked() {
+            *value = !*value;
+            response.mark_changed();
+        }
+        response
+    })
+    .inner
+}
+
+fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
+    let height = ui.spacing().interact_size.y.max(16.0) * 0.82;
+    let size = egui::vec2(height * 1.85, height);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, "")
+    });
+    if ui.is_rect_visible(rect) {
+        let t = ui.ctx().animate_bool_responsive(response.id, *on);
+        let radius = 0.5 * rect.height();
+        let mut off_fill = theme::SURFACE4;
+        if response.hovered() {
+            off_fill = off_fill.lerp_to_gamma(Color32::WHITE, 0.06);
+        }
+        let track = off_fill.lerp_to_gamma(theme::PILL_ACCENT, t);
+        ui.painter()
+            .rect(rect, radius, track, Stroke::NONE, egui::StrokeKind::Inside);
+        let knob_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
+        ui.painter().circle_filled(
+            egui::pos2(knob_x, rect.center().y),
+            radius - 2.5,
+            Color32::WHITE,
+        );
+    }
+    response
 }
 
 pub fn tab_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
