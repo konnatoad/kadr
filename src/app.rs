@@ -1151,7 +1151,7 @@ impl eframe::App for KadrApp {
                 });
         }
 
-        if self.config.show_thumbnails && !self.entries.is_empty() {
+        if !self.fullscreen && self.config.show_thumbnails && !self.entries.is_empty() {
             let thumb_height = self.config.thumbnail_size + 10.0;
             let thumb_size = self.config.thumbnail_size;
             let current_index = self.current_index;
