@@ -592,6 +592,7 @@ impl KadrApp {
         let mut do_pan_left = false;
         let mut do_pan_right = false;
         let mut do_fullscreen = false;
+        let mut do_escape_fullscreen = false;
         let mut do_toggle_thumbs = false;
         let mut do_rotate_cw = false;
         let mut do_rotate_ccw = false;
@@ -617,6 +618,7 @@ impl KadrApp {
             do_pan_right = bindings.is_action(&KeyAction::PanRight, input);
             do_fullscreen = bindings.is_action(&KeyAction::Fullscreen, input);
             do_toggle_thumbs = bindings.is_action(&KeyAction::ToggleThumbnails, input);
+            do_escape_fullscreen = input.key_pressed(egui::Key::Escape);
             do_rotate_cw = bindings.is_action(&KeyAction::RotateCW, input);
             do_rotate_ccw = bindings.is_action(&KeyAction::RotateCCW, input);
             do_flip_h = bindings.is_action(&KeyAction::FlipHorizontal, input);
@@ -668,6 +670,10 @@ impl KadrApp {
         if do_fullscreen {
             self.fullscreen = !self.fullscreen;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        }
+        if do_escape_fullscreen {
+            self.fullscreen = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
         if do_toggle_thumbs {
             self.config.show_thumbnails = !self.config.show_thumbnails;
