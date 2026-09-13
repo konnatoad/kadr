@@ -510,6 +510,7 @@ impl KadrApp {
             let mut pgdn = false;
             let mut pgup = false;
             let mut do_fullscreen = false;
+            let mut do_escape_fullscreen = false;
             let mut do_quit = false;
 
             ctx.input(|i| {
@@ -521,6 +522,7 @@ impl KadrApp {
                 pgdn = i.key_pressed(egui::Key::PageDown);
                 pgup = i.key_pressed(egui::Key::PageUp);
                 do_fullscreen = i.key_pressed(egui::Key::F11);
+                do_escape_fullscreen = i.key_pressed(egui::Key::Escape);
                 do_quit = i.modifiers.ctrl && i.key_pressed(egui::Key::Q);
             });
 
@@ -554,6 +556,10 @@ impl KadrApp {
             if do_fullscreen {
                 self.fullscreen = !self.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            }
+            if do_escape_fullscreen {
+                self.fullscreen = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
             }
             if do_quit {
                 let _ = self.config.save();
