@@ -17,10 +17,10 @@ pub enum SortMode {
 impl SortMode {
     pub fn label(&self) -> &'static str {
         match self {
-            SortMode::Name => "Name (A→Z)",
-            SortMode::NameReverse => "Name (Z→A)",
-            SortMode::Size => "Size (small→large)",
-            SortMode::SizeReverse => "Size (large→small)",
+            SortMode::Name => "Name (ascending)",
+            SortMode::NameReverse => "Name (descending)",
+            SortMode::Size => "Size (ascending)",
+            SortMode::SizeReverse => "Size (descending)",
             SortMode::Modified => "Date (oldest first)",
             SortMode::ModifiedReverse => "Date (newest first)",
             SortMode::Type => "Type",
