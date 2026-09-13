@@ -3,7 +3,45 @@ use std::path::{Path, PathBuf};
 
 const BASE_URL: &str = "https://bomzh.fm";
 
-//pub fn upload_file -> {}
+pub fn upload_file(path: &Path, api_key: &str, folder_id: &str) -> Result<String> {
+    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("upload")
+        .to_string();
+    let mime = guess_mime(path);
+
+    let boundary = format!("----kadrBoundary{}", std::process::id());
+    let mut body = Vec::with_capacity(data.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(&data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let mut req = ureq::post(&format!("{BASE_URL}/upload"))
+        .header("X-Api-Key", api_key)
+        .header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        );
+    if !folder_id.is_empty() {
+        req = req.query("folder_id", folder_id);
+    }
+
+    match req.send(&body[..]) {
+        Ok(mut resp) => {
+            let text = resp.body_mut().read_to_string()?;
+            Ok(text.trim().to_string())
+        }
+        Err(ureq::Error::StatusCode(code)) => bail!("HTTP {code}"),
+        Err(e) => bail!("{e}"),
+    }
+}
 
 pub fn expand_to_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
