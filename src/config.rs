@@ -22,6 +22,15 @@ pub struct AppConfig {
     pub preferred_monitor: usize,
     #[serde(default)]
     pub loop_videos: bool,
+    pub upload: UploadConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UploadConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub folder_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +59,9 @@ pub struct SlideshowConfig {
     pub transition_secs: f32,
 }
 
-fn default_transition_secs() -> f32 { 0.5 }
+fn default_transition_secs() -> f32 {
+    0.5
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -84,11 +95,14 @@ impl Default for AppConfig {
             remember_last_folder: true,
             preferred_monitor: 0,
             loop_videos: false,
+            upload: UploadConfig::default(),
         }
     }
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// `%APPDATA%\kadr` — the directory that holds `config.toml` and crash logs.
 /// Falls back to the current directory if `APPDATA` is not set.
@@ -123,4 +137,3 @@ impl AppConfig {
         Ok(())
     }
 }
-
