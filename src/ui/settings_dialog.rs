@@ -93,29 +93,24 @@ impl SettingsDialog {
             .min_size([480.0, 360.0])
             .default_size([540.0, 440.0])
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    if widgets::tab_button(ui, "General", self.tab == SettingsTab::General)
-                        .clicked()
-                    {
-                        self.tab = SettingsTab::General;
-                    }
-                    if widgets::tab_button(ui, "Appearance", self.tab == SettingsTab::Appearance)
-                        .clicked()
-                    {
-                        self.tab = SettingsTab::Appearance;
-                    }
-                    if widgets::tab_button(ui, "Keybinds", self.tab == SettingsTab::Keybinds)
-                        .clicked()
-                    {
-                        self.tab = SettingsTab::Keybinds;
-                    }
-                    if widgets::tab_button(ui, "Slideshow", self.tab == SettingsTab::Slideshow)
-                        .clicked()
-                    {
-                        self.tab = SettingsTab::Slideshow;
-                    }
-                });
+                let tab_index = match self.tab {
+                    SettingsTab::General => 0,
+                    SettingsTab::Appearance => 1,
+                    SettingsTab::Keybinds => 2,
+                    SettingsTab::Slideshow => 3,
+                };
+                if let Some(i) = widgets::sliding_tab_bar(
+                    ui,
+                    &["General", "Appearance", "Keybinds", "Slideshow"],
+                    tab_index,
+                ) {
+                    self.tab = match i {
+                        0 => SettingsTab::General,
+                        1 => SettingsTab::Appearance,
+                        2 => SettingsTab::Keybinds,
+                        _ => SettingsTab::Slideshow,
+                    };
+                }
                 ui.add_space(2.0);
                 ui.separator();
                 ui.add_space(6.0);

@@ -1,4 +1,4 @@
-use egui::{Color32, RichText, Stroke, Ui, epaint::color};
+use egui::{Color32, RichText, Stroke, Ui};
 
 pub mod theme {
     use egui::Color32;
@@ -158,22 +158,16 @@ pub fn action_button(ui: &mut Ui, label: &str) -> egui::Response {
 }
 
 pub fn pill_toggle(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
-    let (bg, text_col, stroke) = if active {
-        (
-            theme::pill_accent_fill(40),
-            theme::PILL_ACCENT,
-            Stroke::new(1.0, theme::pill_accent_fill(180)),
-        )
-    } else {
-        (
-            theme::white_wash(8),
-            theme::TEXT_DIM,
-            Stroke::new(1.0, theme::BORDER),
-        )
-    };
+    let id = ui.id().with(label);
+    let t = ui.ctx().animate_bool_responsive(id, active);
+
+    let bg = theme::white_wash(8).lerp_to_gamma(theme::pill_accent_fill(40), t);
+    let text_col = theme::TEXT_DIM.lerp_to_gamma(theme::PILL_ACCENT, t);
+    let stroke_col = theme::BORDER.lerp_to_gamma(theme::pill_accent_fill(180), t);
+
     let btn = egui::Button::new(RichText::new(label).size(12.0).color(text_col))
         .fill(bg)
-        .stroke(stroke)
+        .stroke(Stroke::new(1.0, stroke_col))
         .corner_radius(theme::RADIUS_PILL);
     ui.add(btn)
 }
@@ -222,21 +216,75 @@ fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
     response
 }
 
-pub fn tab_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
-    let (bg, text_col, stroke) = if active {
-        (
-            theme::accent_fill(40),
-            theme::ACCENT_TEXT,
-            Stroke::new(1.0, theme::accent_fill(170)),
-        )
-    } else {
-        (Color32::TRANSPARENT, theme::TEXT_DIM, Stroke::NONE)
-    };
-    let btn = egui::Button::new(RichText::new(label).size(13.0).color(text_col))
-        .fill(bg)
-        .stroke(stroke)
-        .corner_radius(theme::RADIUS_PILL);
-    ui.add(btn)
+pub fn sliding_tab_bar(ui: &mut Ui, labels: &[&str], active: usize) -> Option<usize> {
+    let font = egui::FontId::proportional(13.0);
+    let pad_x = 14.0_f32;
+    let height = 28.0_f32;
+    let gap = 2.0_f32;
+    let mut rel_rects = Vec::with_capacity(labels.len());
+    let mut x = 0.0_f32;
+    for label in labels {
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*label).to_string(), font.clone(), theme::TEXT);
+        let w = galley.size().x + pad_x * 2.0;
+        rel_rects.push(egui::Rect::from_min_size(
+            egui::pos2(x, 0.0),
+            egui::vec2(w, height),
+        ));
+        x += w + gap;
+    }
+    let total_w = (x - gap).max(0.0);
+
+    let (row_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, height), egui::Sense::hover());
+    let rects: Vec<egui::Rect> = rel_rects
+        .iter()
+        .map(|r| r.translate(row_rect.min.to_vec2()))
+        .collect();
+    let active = active.min(rects.len().saturating_sub(1));
+    let target = rects[active];
+    let base_id = ui.id().with("sliding_tab_bar");
+    let anim_x = ui
+        .ctx()
+        .animate_value_with_time(base_id.with("x"), target.min.x, 0.2);
+    let anim_w = ui
+        .ctx()
+        .animate_value_with_time(base_id.with("w"), target.width(), 0.2);
+    let pill_rect = egui::Rect::from_min_size(
+        egui::pos2(anim_x, row_rect.min.y),
+        egui::vec2(anim_w, height),
+    );
+
+    ui.painter().rect(
+        pill_rect,
+        theme::RADIUS_PILL,
+        theme::accent_fill(40),
+        Stroke::new(1.0, theme::accent_fill(170)),
+        egui::StrokeKind::Inside,
+    );
+    let mut clicked = None;
+    for (i, (label, rect)) in labels.iter().zip(rects.iter()).enumerate() {
+        let resp = ui.interact(*rect, base_id.with(("tab", i)), egui::Sense::click());
+        let text_col = if i == active {
+            theme::ACCENT_TEXT
+        } else if resp.hovered() {
+            theme::TEXT
+        } else {
+            theme::TEXT_DIM
+        };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            text_col,
+        );
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+
+    clicked
 }
 
 pub fn section_label(ui: &mut Ui, text: &str) {
