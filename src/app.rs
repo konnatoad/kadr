@@ -1081,73 +1081,75 @@ impl eframe::App for KadrApp {
             } // end !is_video
         }
 
-        egui::Panel::top("toolbar")
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin {
-                        left: 14,
-                        right: 14,
-                        top: 10,
-                        bottom: 8,
-                    }),
-            )
-            .show(ui, |ui| {
-                let sort_mode = self.config.viewer.sort_mode.clone();
-                let toolbar_resp = show_toolbar(
-                    ui,
-                    &sort_mode,
-                    self.config.filter_images,
-                    self.config.filter_videos,
-                    self.config.scan_subfolders,
-                    self.slideshow.active,
-                    self.entries.len(),
-                    if self.entries.is_empty() {
-                        None
-                    } else {
-                        Some(self.current_index)
-                    },
-                );
+        if !self.fullscreen {
+            egui::Panel::top("toolbar")
+                .frame(
+                    egui::Frame::default()
+                        .fill(theme::BG)
+                        .inner_margin(egui::Margin {
+                            left: 14,
+                            right: 14,
+                            top: 10,
+                            bottom: 8,
+                        }),
+                )
+                .show(ui, |ui| {
+                    let sort_mode = self.config.viewer.sort_mode.clone();
+                    let toolbar_resp = show_toolbar(
+                        ui,
+                        &sort_mode,
+                        self.config.filter_images,
+                        self.config.filter_videos,
+                        self.config.scan_subfolders,
+                        self.slideshow.active,
+                        self.entries.len(),
+                        if self.entries.is_empty() {
+                            None
+                        } else {
+                            Some(self.current_index)
+                        },
+                    );
 
-                if toolbar_resp.open_folder {
-                    self.pick_folder();
-                }
-                if toolbar_resp.open_file {
-                    self.pick_file();
-                }
-                if toolbar_resp.combine {
-                    self.combine_dialog.open = true;
-                }
-                if toolbar_resp.settings {
-                    self.settings_dialog.open = true;
-                }
-                if toolbar_resp.slideshow {
-                    self.slideshow.toggle();
-                }
+                    if toolbar_resp.open_folder {
+                        self.pick_folder();
+                    }
+                    if toolbar_resp.open_file {
+                        self.pick_file();
+                    }
+                    if toolbar_resp.combine {
+                        self.combine_dialog.open = true;
+                    }
+                    if toolbar_resp.settings {
+                        self.settings_dialog.open = true;
+                    }
+                    if toolbar_resp.slideshow {
+                        self.slideshow.toggle();
+                    }
 
-                if toolbar_resp.toggle_images {
-                    self.config.filter_images = !self.config.filter_images;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_images {
+                        self.config.filter_images = !self.config.filter_images;
+                        if let Some(folder) = self.config.last_path.clone() {
+                            self.open_path(folder);
+                        }
                     }
-                }
-                if toolbar_resp.toggle_videos {
-                    self.config.filter_videos = !self.config.filter_videos;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_videos {
+                        self.config.filter_videos = !self.config.filter_videos;
+                        if let Some(folder) = self.config.last_path.clone() {
+                            self.open_path(folder);
+                        }
                     }
-                }
-                if toolbar_resp.toggle_subfolders {
-                    self.config.scan_subfolders = !self.config.scan_subfolders;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_subfolders {
+                        self.config.scan_subfolders = !self.config.scan_subfolders;
+                        if let Some(folder) = self.config.last_path.clone() {
+                            self.open_path(folder);
+                        }
                     }
-                }
-                if let Some(mode) = toolbar_resp.sort_changed {
-                    self.config.viewer.sort_mode = mode;
-                    self.apply_sort();
-                }
-            });
+                    if let Some(mode) = toolbar_resp.sort_changed {
+                        self.config.viewer.sort_mode = mode;
+                        self.apply_sort();
+                    }
+                });
+        }
 
         if self.config.show_thumbnails && !self.entries.is_empty() {
             let thumb_height = self.config.thumbnail_size + 10.0;
