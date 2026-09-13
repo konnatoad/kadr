@@ -1600,9 +1600,6 @@ fn apply_lua_cmd(
 }
 
 fn apply_theme(ctx: &egui::Context) {
-    // Tokyo Night: deep navy background, blue/purple accents. See
-    // `crate::ui::widgets::theme` for the full palette — these are the same
-    // constants, just wired into egui's global widget visuals here.
     let bg = theme::BG;
     let surface = theme::SURFACE;
     let surface2 = theme::SURFACE2;
@@ -1623,6 +1620,7 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.window_corner_radius = egui::CornerRadius::same(theme::RADIUS as u8);
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow::NONE;
+    visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
 
     visuals.selection.bg_fill = theme::accent_fill(60);
     visuals.selection.stroke = egui::Stroke::new(1.0, accent);
@@ -1647,7 +1645,6 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.hovered.corner_radius = radius;
     visuals.widgets.hovered.expansion = 1.0;
 
-    visuals.widgets.active.bg_fill = Color32::from_rgb(0x2b, 0x30, 0x54);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
     visuals.widgets.active.corner_radius = radius;
@@ -1662,10 +1659,10 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    style.spacing.button_padding = egui::vec2(11.0, 6.0);
     style.spacing.indent = 16.0;
-    style.spacing.interact_size = egui::vec2(40.0, 30.0);
+    style.spacing.interact_size = egui::vec2(36.0, 27.0);
     style.text_styles.insert(
         egui::TextStyle::Body,
         egui::FontId::new(13.5, egui::FontFamily::Proportional),
