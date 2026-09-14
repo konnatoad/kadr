@@ -111,6 +111,8 @@ impl KadrApp {
         open_path: Option<PathBuf>,
         config: AppConfig,
     ) -> Self {
+        crate::crash::reassert();
+        crate::crash::snapshot_modules();
         apply_theme(&cc.egui_ctx);
 
         let mut app = Self {
@@ -280,6 +282,7 @@ impl KadrApp {
         self.preload_texture = None;
 
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("preloading {}", path.display()));
             if let Ok(img) = LoadedImage::load(&path) {
                 let result = LoadResult {
@@ -329,6 +332,7 @@ impl KadrApp {
         );
 
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             // If the process dies hard inside a decoder (an allocation abort on
             // a corrupt header, a stack overflow) neither the panic hook nor the
             // exception filter runs — this note on disk is what survives.
@@ -720,6 +724,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("rotating {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| save_image(&apply_rotation(img.image, degrees), &path))
@@ -739,6 +744,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("flipping {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| {
@@ -1473,6 +1479,7 @@ impl eframe::App for KadrApp {
                 let result_tx = Arc::clone(&self.combine_result_rx);
                 let ctx_clone = ctx.clone();
                 thread::spawn(move || {
+                    crate::crash::guard_thread_stack();
                     let res = combine_folders(&sources, &dest, progress).map_err(|e| e.to_string());
                     if let Ok(mut slot) = result_tx.lock() {
                         *slot = Some(res);
@@ -1583,6 +1590,7 @@ impl eframe::App for KadrApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::crash::mark_normal_exit();
         let _ = self.config.save();
     }
 }
