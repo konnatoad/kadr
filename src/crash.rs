@@ -242,12 +242,38 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         if REPORTING.swap(true, Ordering::SeqCst) {
             hard_exit(code.max(1));
         }
-        let _ = take_breadcrumbs();
 
         let name = exception_name(code);
         let module = module_for(addr);
 
-        // ── Short reason (message box) + the cheap half of the log ───────────
+        // Walk the stack and gather everything else before writing or showing
+        // anything — this used to happen after the popup, so a fault in the
+        // walk (touching a corrupted stack) silently ate the trace every time.
+        let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
+        let n = RtlCaptureStackBackTrace(
+            0,
+            frames.len() as u32,
+            frames.as_mut_ptr(),
+            core::ptr::null_mut(),
+        ) as usize;
+
+        let mut stack = String::new();
+        let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
+        for (i, frame) in frames.iter().take(n).enumerate() {
+            let ret = *frame as usize;
+            match module_for(ret) {
+                Some((m, off)) => {
+                    let _ = writeln!(stack, "  #{i:02}  {m}+0x{off:X}");
+                }
+                None => {
+                    let _ = writeln!(stack, "  #{i:02}  0x{ret:016X}");
+                }
+            }
+        }
+
+        let modules = loaded_modules();
+        let crumb = take_breadcrumbs();
+
         let mut short = String::new();
         let _ = write!(short, "{name}");
         if let Some(kind) = av_kind {
@@ -268,6 +294,14 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         let _ = writeln!(full, "thread id     : {}", GetCurrentThreadId());
         if let Some(kind) = av_kind {
             let _ = writeln!(full, "invalid access: {kind} 0x{av_addr:016X}");
+            match module_for(av_addr) {
+                Some((m, off)) => {
+                    let _ = writeln!(full, "  ...inside   : {m}+0x{off:X}");
+                }
+                None => {
+                    let _ = writeln!(full, "  ...inside   : (not in any loaded module)");
+                }
+            }
         }
         match &module {
             Some((m, off)) => {
@@ -277,10 +311,14 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
                 let _ = writeln!(full, "faulting ip   : 0x{addr:016X}  (unknown module)");
             }
         }
+        if let Some(what) = &crumb {
+            let _ = writeln!(full, "last activity : {}", what.replace('\n', "  —  "));
+        }
+        let _ = writeln!(full);
+        let _ = write!(full, "{stack}");
+        let _ = writeln!(full);
+        let _ = write!(full, "{modules}");
 
-        // ── Persist + notify BEFORE the stack walk ──────────────────────────
-        // The walk touches a corrupted stack and can fault again; do it last
-        // so the user has already seen the popup and a log by then.
         let saved = write_log(env!("CARGO_PKG_VERSION"), headline, &full);
         let mut text = format!("{headline}\n\n{short}");
         match &saved {
@@ -288,40 +326,6 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
             None => text.push_str("\n\n(could not write a crash log)"),
         }
         show_popup("kadr — crash report", &text);
-
-        // ── Best-effort stack walk, appended to the log ─────────────────────
-        if let Some(path) = &saved {
-            let mut walk = String::new();
-            let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
-            let n = RtlCaptureStackBackTrace(
-                0,
-                frames.len() as u32,
-                frames.as_mut_ptr(),
-                core::ptr::null_mut(),
-            ) as usize;
-            let _ = writeln!(walk, "\n---- stack ({n} frames, return addresses) ----");
-            for (i, frame) in frames.iter().take(n).enumerate() {
-                let ret = *frame as usize;
-                match module_for(ret) {
-                    Some((m, off)) => {
-                        let _ = writeln!(walk, "  #{i:02}  {m}+0x{off:X}");
-                    }
-                    None => {
-                        let _ = writeln!(walk, "  #{i:02}  0x{ret:016X}");
-                    }
-                }
-            }
-            let _ = writeln!(
-                walk,
-                "\nResolve the `module+0xoffset` entries against a matching build \
-                 (map file or unstripped binary) for function names."
-            );
-            use std::io::Write as _;
-            let _ = std::fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map(|mut f| f.write_all(walk.as_bytes()));
-        }
 
         hard_exit(code.max(1));
     }
@@ -402,6 +406,67 @@ fn module_for(addr: usize) -> Option<(String, usize)> {
     Some((name, addr.wrapping_sub(base)))
 }
 
+/// Every loaded module's name, base address and size — lets a stack frame or
+/// bad-access address be matched against a module by hand if it doesn't
+/// resolve directly.
+#[cfg(windows)]
+fn loaded_modules() -> String {
+    use std::fmt::Write as _;
+    use std::os::windows::ffi::OsStringExt;
+    use winapi::shared::minwindef::HMODULE;
+    use winapi::um::libloaderapi::GetModuleFileNameW;
+    use winapi::um::processthreadsapi::GetCurrentProcess;
+    use winapi::um::psapi::{EnumProcessModules, GetModuleInformation, MODULEINFO};
+
+    let mut out = String::new();
+    let _ = writeln!(out, "---- loaded modules ----");
+
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut modules: [HMODULE; 256] = [core::ptr::null_mut(); 256];
+        let mut needed: u32 = 0;
+        let cb = (modules.len() * core::mem::size_of::<HMODULE>()) as u32;
+        if EnumProcessModules(process, modules.as_mut_ptr(), cb, &mut needed) == 0 {
+            let _ = writeln!(out, "(could not enumerate modules)");
+            return out;
+        }
+
+        let count = (needed as usize / core::mem::size_of::<HMODULE>()).min(modules.len());
+        for &hmod in modules.iter().take(count) {
+            let mut buf = [0u16; 260];
+            let len = GetModuleFileNameW(hmod, buf.as_mut_ptr(), buf.len() as u32) as usize;
+            let name = if len == 0 {
+                "<unknown>".to_string()
+            } else {
+                let os = std::ffi::OsString::from_wide(&buf[..len.min(buf.len())]);
+                std::path::Path::new(&os)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "<unknown>".to_string())
+            };
+
+            let mut info: MODULEINFO = core::mem::zeroed();
+            let ok = GetModuleInformation(
+                process,
+                hmod,
+                &mut info,
+                core::mem::size_of::<MODULEINFO>() as u32,
+            );
+            let base = if ok != 0 { info.lpBaseOfDll as usize } else { hmod as usize };
+            let size = if ok != 0 { info.SizeOfImage as usize } else { 0 };
+            let _ = writeln!(out, "  {name:<28} base=0x{base:016X}  size=0x{size:X}");
+        }
+    }
+
+    out
+}
+
+#[cfg(not(windows))]
+fn loaded_modules() -> String {
+    String::new()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared reporter
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,11 +480,17 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
         // now without a second dialog.
         hard_exit(exit_code);
     }
-    // We're handling it here, so don't also report it as a breadcrumb next launch.
-    let _ = take_breadcrumbs();
+    let crumb = take_breadcrumbs();
+
+    let mut full = full.to_string();
+    if let Some(what) = &crumb {
+        full = format!("last activity : {}\n\n{full}", what.replace('\n', "  —  "));
+    }
+    full.push_str("\n\n");
+    full.push_str(&loaded_modules());
 
     let version = env!("CARGO_PKG_VERSION");
-    let saved = write_log(version, headline, full);
+    let saved = write_log(version, headline, &full);
 
     let mut text = format!("{headline}\n\n{short}");
     match &saved {

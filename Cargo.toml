@@ -55,6 +55,7 @@ winapi = { version = "0.3", features = [
   "minwindef",
   "minwinbase",
   "sysinfoapi",
+  "psapi",
 ] }
 
 [build-dependencies]
