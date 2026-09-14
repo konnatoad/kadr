@@ -33,6 +33,10 @@ static REPORTING: AtomicBool = AtomicBool::new(false);
 /// Per-process counter so concurrent [`Breadcrumb`]s don't share a file.
 static CRUMB_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Set once eframe's own shutdown starts, so the `atexit` hook can tell a
+/// normal close apart from an unexpected `exit()` call.
+static NORMAL_EXIT: AtomicBool = AtomicBool::new(false);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Breadcrumbs — the catch-all for deaths that bypass both hooks
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,6 +98,8 @@ fn take_breadcrumbs() -> Option<String> {
 /// Install the panic hook and (on Windows) the unhandled-exception filter.
 /// Call this as the very first thing in `main()`.
 pub fn install() {
+    snapshot_modules();
+
     // A leftover breadcrumb means the last run died in a way neither hook can
     // catch. Report it before arming anything for this run.
     if let Some(activity) = take_breadcrumbs() {
@@ -125,8 +131,67 @@ pub fn install() {
         );
     }));
 
+    install_exit_hook();
+
     #[cfg(windows)]
     install_seh();
+}
+
+/// Give the current thread the same stack-overflow headroom the main thread
+/// gets, so `seh_filter` can still run if this thread overflows its stack.
+/// Call at the top of any `thread::spawn` closure that decodes files or calls
+/// into native libraries.
+#[cfg(windows)]
+pub fn guard_thread_stack() {
+    let mut guarantee: u32 = 32 * 1024;
+    unsafe {
+        SetThreadStackGuarantee(&mut guarantee);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn guard_thread_stack() {}
+
+/// Re-arm kadr's own exception filter. Some GPU drivers install their own
+/// `SetUnhandledExceptionFilter` during OpenGL context creation, silently
+/// replacing ours — call this once the GL context exists to win it back.
+#[cfg(windows)]
+pub fn reassert() {
+    install_seh();
+}
+
+#[cfg(not(windows))]
+pub fn reassert() {}
+
+/// Call when eframe's shutdown begins, so `on_process_exit` below knows the
+/// close was expected instead of logging a normal quit as a crash.
+pub fn mark_normal_exit() {
+    NORMAL_EXIT.store(true, Ordering::SeqCst);
+}
+
+fn install_exit_hook() {
+    unsafe extern "C" {
+        fn atexit(cb: extern "C" fn()) -> i32;
+    }
+    unsafe {
+        atexit(on_process_exit);
+    }
+}
+
+/// Catches a native library calling `exit()` directly — no panic, no Windows
+/// exception, so neither other hook ever sees it. No stack trace is possible
+/// here, but it beats the process just vanishing.
+extern "C" fn on_process_exit() {
+    if NORMAL_EXIT.load(Ordering::SeqCst) || REPORTING.load(Ordering::SeqCst) {
+        return;
+    }
+    let crumb = take_breadcrumbs();
+    let mut full =
+        String::from("kind          : process exited via exit(), not a panic or Windows exception\n");
+    if let Some(what) = &crumb {
+        full.push_str(&format!("last activity : {}\n", what.replace('\n', "  —  ")));
+    }
+    write_log(env!("CARGO_PKG_VERSION"), "kadr exited unexpectedly.", &full);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,12 +307,38 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         if REPORTING.swap(true, Ordering::SeqCst) {
             hard_exit(code.max(1));
         }
-        let _ = take_breadcrumbs();
 
         let name = exception_name(code);
         let module = module_for(addr);
 
-        // ── Short reason (message box) + the cheap half of the log ───────────
+        // Walk the stack and gather everything else before writing or showing
+        // anything — this used to happen after the popup, so a fault in the
+        // walk (touching a corrupted stack) silently ate the trace every time.
+        let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
+        let n = RtlCaptureStackBackTrace(
+            0,
+            frames.len() as u32,
+            frames.as_mut_ptr(),
+            core::ptr::null_mut(),
+        ) as usize;
+
+        let mut stack = String::new();
+        let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
+        for (i, frame) in frames.iter().take(n).enumerate() {
+            let ret = *frame as usize;
+            match module_for(ret) {
+                Some((m, off)) => {
+                    let _ = writeln!(stack, "  #{i:02}  {m}+0x{off:X}");
+                }
+                None => {
+                    let _ = writeln!(stack, "  #{i:02}  0x{ret:016X}");
+                }
+            }
+        }
+
+        let modules = loaded_modules();
+        let crumb = take_breadcrumbs();
+
         let mut short = String::new();
         let _ = write!(short, "{name}");
         if let Some(kind) = av_kind {
@@ -268,6 +359,14 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         let _ = writeln!(full, "thread id     : {}", GetCurrentThreadId());
         if let Some(kind) = av_kind {
             let _ = writeln!(full, "invalid access: {kind} 0x{av_addr:016X}");
+            match module_for(av_addr) {
+                Some((m, off)) => {
+                    let _ = writeln!(full, "  ...inside   : {m}+0x{off:X}");
+                }
+                None => {
+                    let _ = writeln!(full, "  ...inside   : (not in any loaded module)");
+                }
+            }
         }
         match &module {
             Some((m, off)) => {
@@ -277,10 +376,14 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
                 let _ = writeln!(full, "faulting ip   : 0x{addr:016X}  (unknown module)");
             }
         }
+        if let Some(what) = &crumb {
+            let _ = writeln!(full, "last activity : {}", what.replace('\n', "  —  "));
+        }
+        let _ = writeln!(full);
+        let _ = write!(full, "{stack}");
+        let _ = writeln!(full);
+        let _ = write!(full, "{modules}");
 
-        // ── Persist + notify BEFORE the stack walk ──────────────────────────
-        // The walk touches a corrupted stack and can fault again; do it last
-        // so the user has already seen the popup and a log by then.
         let saved = write_log(env!("CARGO_PKG_VERSION"), headline, &full);
         let mut text = format!("{headline}\n\n{short}");
         match &saved {
@@ -288,40 +391,6 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
             None => text.push_str("\n\n(could not write a crash log)"),
         }
         show_popup("kadr — crash report", &text);
-
-        // ── Best-effort stack walk, appended to the log ─────────────────────
-        if let Some(path) = &saved {
-            let mut walk = String::new();
-            let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
-            let n = RtlCaptureStackBackTrace(
-                0,
-                frames.len() as u32,
-                frames.as_mut_ptr(),
-                core::ptr::null_mut(),
-            ) as usize;
-            let _ = writeln!(walk, "\n---- stack ({n} frames, return addresses) ----");
-            for (i, frame) in frames.iter().take(n).enumerate() {
-                let ret = *frame as usize;
-                match module_for(ret) {
-                    Some((m, off)) => {
-                        let _ = writeln!(walk, "  #{i:02}  {m}+0x{off:X}");
-                    }
-                    None => {
-                        let _ = writeln!(walk, "  #{i:02}  0x{ret:016X}");
-                    }
-                }
-            }
-            let _ = writeln!(
-                walk,
-                "\nResolve the `module+0xoffset` entries against a matching build \
-                 (map file or unstripped binary) for function names."
-            );
-            use std::io::Write as _;
-            let _ = std::fs::OpenOptions::new()
-                .append(true)
-                .open(path)
-                .map(|mut f| f.write_all(walk.as_bytes()));
-        }
 
         hard_exit(code.max(1));
     }
@@ -356,50 +425,112 @@ fn exception_name(code: u32) -> &'static str {
     }
 }
 
-/// Resolve an address to `(module file name, offset from module base)`.
+/// Snapshot of every loaded module's (base, size, name), built by
+/// `snapshot_modules` while the process is healthy. Crash-time code reads
+/// this instead of asking the loader directly — see `snapshot_modules` for
+/// why.
+static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Record the current module list somewhere crash-time code can read it
+/// without going through the loader. `GetModuleHandleExW`, `GetModuleFileNameW`
+/// and `EnumProcessModules` all need the loader lock internally — if the
+/// thread that's crashing happened to be mid-`LoadLibrary` (exactly how
+/// `heif.dll`/`raw_r.dll` get loaded) when it died, calling any of those from
+/// inside the exception handler blocks on a lock that's never coming back,
+/// and the crash popup just never shows up. Call this while things are fine
+/// (app startup, after the GL context exists) so crash time is a plain,
+/// lock-free scan of an already-built list instead.
 #[cfg(windows)]
-fn module_for(addr: usize) -> Option<(String, usize)> {
+pub fn snapshot_modules() {
     use std::os::windows::ffi::OsStringExt;
     use winapi::shared::minwindef::HMODULE;
-    use winapi::um::libloaderapi::{GetModuleFileNameW, GetModuleHandleExW};
+    use winapi::um::libloaderapi::GetModuleFileNameW;
+    use winapi::um::processthreadsapi::GetCurrentProcess;
+    use winapi::um::psapi::{EnumProcessModules, GetModuleInformation, MODULEINFO};
 
-    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x0000_0004;
-    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x0000_0002;
+    let mut list = Vec::new();
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut modules: [HMODULE; 256] = [core::ptr::null_mut(); 256];
+        let mut needed: u32 = 0;
+        let cb = (modules.len() * core::mem::size_of::<HMODULE>()) as u32;
+        if EnumProcessModules(process, modules.as_mut_ptr(), cb, &mut needed) != 0 {
+            let count = (needed as usize / core::mem::size_of::<HMODULE>()).min(modules.len());
+            for &hmod in modules.iter().take(count) {
+                let mut buf = [0u16; 260];
+                let len = GetModuleFileNameW(hmod, buf.as_mut_ptr(), buf.len() as u32) as usize;
+                if len == 0 {
+                    continue;
+                }
+                let os = std::ffi::OsString::from_wide(&buf[..len.min(buf.len())]);
+                let name = std::path::Path::new(&os)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_default();
 
+                let mut info: MODULEINFO = core::mem::zeroed();
+                if GetModuleInformation(
+                    process,
+                    hmod,
+                    &mut info,
+                    core::mem::size_of::<MODULEINFO>() as u32,
+                ) != 0
+                {
+                    list.push((info.lpBaseOfDll as usize, info.SizeOfImage as usize, name));
+                }
+            }
+        }
+    }
+
+    if let Ok(mut cache) = MODULE_CACHE.lock() {
+        *cache = list;
+    }
+}
+
+#[cfg(not(windows))]
+pub fn snapshot_modules() {}
+
+/// Resolve an address to `(module file name, offset from module base)`
+/// against the snapshot from `snapshot_modules`.
+#[cfg(windows)]
+fn module_for(addr: usize) -> Option<(String, usize)> {
     if addr == 0 {
         return None;
     }
-
-    let mut hmodule: HMODULE = core::ptr::null_mut();
-    let mut buf = [0u16; 260];
-
-    let len = unsafe {
-        let ok = GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            addr as *const u16,
-            &mut hmodule,
-        );
-        if ok == 0 || hmodule.is_null() {
-            return None;
+    let cache = MODULE_CACHE.lock().ok()?;
+    for (base, size, name) in cache.iter() {
+        if addr >= *base && addr < base + size {
+            return Some((name.clone(), addr - base));
         }
-        GetModuleFileNameW(hmodule, buf.as_mut_ptr(), buf.len() as u32) as usize
-    };
+    }
+    None
+}
 
-    let base = hmodule as usize;
-    let len = len.min(buf.len());
+/// Every loaded module's name, base address and size, from the snapshot —
+/// lets a stack frame or bad-access address be matched against a module by
+/// hand if it doesn't resolve directly.
+#[cfg(windows)]
+fn loaded_modules() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "---- loaded modules ----");
+    match MODULE_CACHE.lock() {
+        Ok(cache) if !cache.is_empty() => {
+            for (base, size, name) in cache.iter() {
+                let _ = writeln!(out, "  {name:<28} base=0x{base:016X}  size=0x{size:X}");
+            }
+        }
+        _ => {
+            let _ = writeln!(out, "(no module snapshot taken)");
+        }
+    }
+    out
+}
 
-    let name = if len == 0 {
-        format!("0x{base:X}")
-    } else {
-        let os = std::ffi::OsString::from_wide(&buf[..len]);
-        std::path::Path::new(&os)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("0x{base:X}"))
-    };
-
-    Some((name, addr.wrapping_sub(base)))
+#[cfg(not(windows))]
+fn loaded_modules() -> String {
+    String::new()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -415,11 +546,17 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
         // now without a second dialog.
         hard_exit(exit_code);
     }
-    // We're handling it here, so don't also report it as a breadcrumb next launch.
-    let _ = take_breadcrumbs();
+    let crumb = take_breadcrumbs();
+
+    let mut full = full.to_string();
+    if let Some(what) = &crumb {
+        full = format!("last activity : {}\n\n{full}", what.replace('\n', "  —  "));
+    }
+    full.push_str("\n\n");
+    full.push_str(&loaded_modules());
 
     let version = env!("CARGO_PKG_VERSION");
-    let saved = write_log(version, headline, full);
+    let saved = write_log(version, headline, &full);
 
     let mut text = format!("{headline}\n\n{short}");
     match &saved {
