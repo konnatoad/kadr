@@ -21,6 +21,7 @@ use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
 use crate::slideshow::lua_script::SlideContext;
 use crate::ui::combine_dialog::{CombineAction, CombineDialog};
+use crate::ui::folders_dialog::{FoldersAction, FoldersDialog};
 use crate::ui::lua_editor::{LuaEditor, LuaEditorAction};
 use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
@@ -52,6 +53,7 @@ pub struct KadrApp {
     fullscreen: bool,
     combine_dialog: CombineDialog,
     combine_result_rx: Arc<Mutex<Option<Result<CombineResult, String>>>>,
+    folders_dialog: FoldersDialog,
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
@@ -127,6 +129,7 @@ impl KadrApp {
             fullscreen: false,
             combine_dialog: CombineDialog::default(),
             combine_result_rx: Arc::new(Mutex::new(None)),
+            folders_dialog: FoldersDialog::default(),
             settings_dialog: SettingsDialog {
                 show_thumbnails: config.show_thumbnails,
                 scan_subfolders: config.scan_subfolders,
@@ -771,9 +774,8 @@ impl KadrApp {
     }
 
     fn pick_folder(&mut self) {
-        if let Some(paths) = rfd::FileDialog::new().pick_folders() {
-            self.open_paths(paths);
-        }
+        self.folders_dialog.open = true;
+        self.folders_dialog.paths.clear();
     }
 
     fn pick_file(&mut self) {
@@ -1500,6 +1502,22 @@ impl eframe::App for KadrApp {
                 self.combine_dialog.result_msg = None;
             }
             CombineAction::None => {}
+        }
+
+        match self.folders_dialog.show(&ctx) {
+            FoldersAction::AddFolders => {
+                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                    self.folders_dialog.paths.extend(paths);
+                }
+            }
+            FoldersAction::Open(paths) => {
+                self.folders_dialog.open = false;
+                self.open_paths(paths);
+            }
+            FoldersAction::Cancel => {
+                self.folders_dialog.open = false;
+            }
+            FoldersAction::None => {}
         }
 
         // Open Lua editor if settings requested it
