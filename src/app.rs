@@ -177,38 +177,51 @@ impl KadrApp {
         };
 
         let restore = if config.remember_last_folder {
-            config.last_path.clone()
+            config.last_paths.clone()
         } else {
-            None
+            Vec::new()
         };
-        if let Some(path) = open_path.or(restore) {
-            app.open_path(path);
+        let initial_paths = match open_path {
+            Some(p) => vec![p],
+            None => restore,
+        };
+        if !initial_paths.is_empty() {
+            app.open_paths(initial_paths);
         }
 
         app
     }
 
-    fn open_path(&mut self, path: PathBuf) {
+    fn open_paths(&mut self, paths: Vec<PathBuf>) {
         let opts = ScanOptions {
             include_images: self.config.filter_images,
             include_videos: self.config.filter_videos,
             recursive: self.config.scan_subfolders,
         };
 
-        let mut entries = if path.is_file() {
-            let folder = path.parent().unwrap_or(&path).to_path_buf();
-            scan_folder(&folder, &opts)
-        } else {
-            scan_folder(&path, &opts)
-        };
+        let mut start_file: Option<PathBuf> = None;
+        let mut folders: Vec<PathBuf> = Vec::new();
+        for p in &paths {
+            if p.is_file() {
+                start_file.get_or_insert_with(|| p.clone());
+                folders.push(p.parent().unwrap_or(p).to_path_buf());
+            } else {
+                folders.push(p.clone());
+            }
+        }
+
+        let mut entries: Vec<MediaEntry> = Vec::new();
+        for folder in &folders {
+            entries.extend(scan_folder(folder, &opts));
+        }
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        entries.dedup_by(|a, b| a.path == b.path);
 
         sort_entries(&mut entries, &self.config.viewer.sort_mode);
 
-        let start_index = if path.is_file() {
-            entries.iter().position(|e| e.path == path).unwrap_or(0)
-        } else {
-            0
-        };
+        let start_index = start_file
+            .and_then(|f| entries.iter().position(|e| e.path == f))
+            .unwrap_or(0);
 
         self.entries = entries;
         self.current_index = start_index;
@@ -220,12 +233,7 @@ impl KadrApp {
         self.video_ctx = None;
         self.video_texture = None;
 
-        let folder = if path.is_file() {
-            path.parent().unwrap_or(&path).to_path_buf()
-        } else {
-            path
-        };
-        self.config.last_path = Some(folder);
+        self.config.last_paths = folders;
 
         self.load_current_image();
     }
@@ -763,8 +771,8 @@ impl KadrApp {
     }
 
     fn pick_folder(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            self.open_path(path);
+        if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+            self.open_paths(paths);
         }
     }
 
@@ -781,7 +789,7 @@ impl KadrApp {
             .add_filter("All media", &["*"])
             .pick_file()
         {
-            self.open_path(path);
+            self.open_paths(vec![path]);
         }
     }
 }
@@ -1046,8 +1054,8 @@ impl eframe::App for KadrApp {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        if let Some(path) = dropped.into_iter().next() {
-            self.open_path(path);
+        if !dropped.is_empty() {
+            self.open_paths(dropped);
         }
 
         let bg = self.bg_color32();
@@ -1146,20 +1154,20 @@ impl eframe::App for KadrApp {
 
                     if toolbar_resp.toggle_images {
                         self.config.filter_images = !self.config.filter_images;
-                        if let Some(folder) = self.config.last_path.clone() {
-                            self.open_path(folder);
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
                         }
                     }
                     if toolbar_resp.toggle_videos {
                         self.config.filter_videos = !self.config.filter_videos;
-                        if let Some(folder) = self.config.last_path.clone() {
-                            self.open_path(folder);
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
                         }
                     }
                     if toolbar_resp.toggle_subfolders {
                         self.config.scan_subfolders = !self.config.scan_subfolders;
-                        if let Some(folder) = self.config.last_path.clone() {
-                            self.open_path(folder);
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
                         }
                     }
                     if let Some(mode) = toolbar_resp.sort_changed {
@@ -1556,8 +1564,8 @@ impl eframe::App for KadrApp {
                     .update_interval(self.settings_dialog.slideshow_interval);
                 self.slideshow.transition_secs = self.settings_dialog.slideshow_transition;
 
-                if needs_rescan && let Some(folder) = self.config.last_path.clone() {
-                    self.open_path(folder);
+                if needs_rescan && !self.config.last_paths.is_empty() {
+                    self.open_paths(self.config.last_paths.clone());
                 }
 
                 // Recompile Lua script, show error in dialog if invalid

@@ -34,7 +34,7 @@ pub fn show_toolbar(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
 
-                if widgets::icon_button(ui, icon_folder, "Open Folder").clicked() {
+                if widgets::icon_button(ui, icon_folder, "Open Folders").clicked() {
                     resp.open_folder = true;
                 }
                 if widgets::icon_button(ui, icon_file, "Open File").clicked() {

@@ -1,7 +1,7 @@
 use crate::keybinds::KeyBindings;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf; // used by last_path and config_path
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -9,7 +9,8 @@ pub struct AppConfig {
     pub viewer: ViewerConfig,
     pub slideshow: SlideshowConfig,
     pub keybinds: KeyBindings,
-    pub last_path: Option<PathBuf>,
+    #[serde(default)]
+    pub last_paths: Vec<PathBuf>,
     pub show_thumbnails: bool,
     pub thumbnail_size: f32,
     pub filter_images: bool,
@@ -86,7 +87,7 @@ impl Default for AppConfig {
                 transition_secs: 0.5,
             },
             keybinds: KeyBindings::default(),
-            last_path: None,
+            last_paths: Vec::new(),
             show_thumbnails: true,
             thumbnail_size: 80.0,
             filter_images: true,
