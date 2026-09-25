@@ -1,6 +1,6 @@
 [package]
 name = "kadr"
-version = "1.6.0-beta.3"
+version = "1.6.0-beta.4"
 edition = "2024"
 description = "A fast, minimal image viewer"
 
