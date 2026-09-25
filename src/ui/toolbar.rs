@@ -5,6 +5,7 @@ use egui::{Color32, Painter, Rect, RichText, Stroke, Ui};
 #[derive(Default)]
 pub struct ToolbarResponse {
     pub open_folder: bool,
+    pub add_folder: bool,
     pub open_file: bool,
     pub combine: bool,
     pub settings: bool,
@@ -36,6 +37,9 @@ pub fn show_toolbar(
 
                 if widgets::icon_button(ui, icon_folder, "Open Folders").clicked() {
                     resp.open_folder = true;
+                }
+                if widgets::icon_button(ui, icon_add_folder, "Add Folder").clicked() {
+                    resp.add_folder = true;
                 }
                 if widgets::icon_button(ui, icon_file, "Open File").clicked() {
                     resp.open_file = true;
@@ -121,6 +125,15 @@ fn icon_folder(p: &Painter, r: Rect, col: Color32) {
     let body = Rect::from_min_max(egui::pos2(r.min.x, r.min.y + tab_h * 0.7), r.max);
     p.rect_stroke(tab, 1.5, stroke, egui::StrokeKind::Outside);
     p.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Outside);
+}
+
+fn icon_add_folder(p: &Painter, r: Rect, col: Color32) {
+    icon_folder(p, r, col);
+    let stroke = Stroke::new(1.3, col);
+    let c = r.center() + egui::vec2(0.0, r.height() * 0.12);
+    let s = r.width() * 0.14;
+    p.line_segment([c - egui::vec2(s, 0.0), c + egui::vec2(s, 0.0)], stroke);
+    p.line_segment([c - egui::vec2(0.0, s), c + egui::vec2(0.0, s)], stroke);
 }
 
 fn icon_file(p: &Painter, r: Rect, col: Color32) {

@@ -778,6 +778,11 @@ impl KadrApp {
         self.folders_dialog.paths.clear();
     }
 
+    fn add_folder(&mut self) {
+        self.folders_dialog.open = true;
+        self.folders_dialog.paths = self.config.last_paths.clone();
+    }
+
     fn pick_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
@@ -1140,6 +1145,9 @@ impl eframe::App for KadrApp {
 
                     if toolbar_resp.open_folder {
                         self.pick_folder();
+                    }
+                    if toolbar_resp.add_folder {
+                        self.add_folder();
                     }
                     if toolbar_resp.open_file {
                         self.pick_file();
