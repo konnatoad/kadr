@@ -1,6 +1,6 @@
 [package]
 name = "kadr"
-version = "1.5.2"
+version = "1.6.0-beta.4"
 edition = "2024"
 description = "A fast, minimal image viewer"
 
@@ -42,6 +42,7 @@ rfd = "0.17"
 scopeguard = "1"
 lru = "0.18"
 rayon = "1"
+ureq = "3.4.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [
@@ -54,6 +55,7 @@ winapi = { version = "0.3", features = [
   "minwindef",
   "minwinbase",
   "sysinfoapi",
+  "psapi",
 ] }
 
 [build-dependencies]

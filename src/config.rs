@@ -1,7 +1,7 @@
 use crate::keybinds::KeyBindings;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf; // used by last_path and config_path
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -9,7 +9,8 @@ pub struct AppConfig {
     pub viewer: ViewerConfig,
     pub slideshow: SlideshowConfig,
     pub keybinds: KeyBindings,
-    pub last_path: Option<PathBuf>,
+    #[serde(default)]
+    pub last_paths: Vec<PathBuf>,
     pub show_thumbnails: bool,
     pub thumbnail_size: f32,
     pub filter_images: bool,
@@ -22,6 +23,15 @@ pub struct AppConfig {
     pub preferred_monitor: usize,
     #[serde(default)]
     pub loop_videos: bool,
+    pub upload: UploadConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UploadConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub folder_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +60,9 @@ pub struct SlideshowConfig {
     pub transition_secs: f32,
 }
 
-fn default_transition_secs() -> f32 { 0.5 }
+fn default_transition_secs() -> f32 {
+    0.5
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -75,7 +87,7 @@ impl Default for AppConfig {
                 transition_secs: 0.5,
             },
             keybinds: KeyBindings::default(),
-            last_path: None,
+            last_paths: Vec::new(),
             show_thumbnails: true,
             thumbnail_size: 80.0,
             filter_images: true,
@@ -84,11 +96,14 @@ impl Default for AppConfig {
             remember_last_folder: true,
             preferred_monitor: 0,
             loop_videos: false,
+            upload: UploadConfig::default(),
         }
     }
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 /// `%APPDATA%\kadr` — the directory that holds `config.toml` and crash logs.
 /// Falls back to the current directory if `APPDATA` is not set.
@@ -123,4 +138,3 @@ impl AppConfig {
         Ok(())
     }
 }
-
