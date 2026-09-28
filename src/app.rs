@@ -9,7 +9,7 @@ use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
 use crate::config::AppConfig;
 use crate::fs::combine::{CombineResult, combine_folders, count_images};
-use crate::fs::scanner::{ScanOptions, scan_folder};
+use crate::fs::scanner::{ScanOptions, scan_candidates};
 use crate::fs::sorter::sort_entries;
 use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
@@ -30,7 +30,7 @@ use crate::ui::video_controls::{ControlsAction, show_video_controls};
 use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
 use crate::ui::widgets::theme;
 use crate::video::VideoContext;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const THUMB_CACHE_LIMIT: usize = 200;
 
@@ -54,6 +54,11 @@ pub struct KadrApp {
     combine_dialog: CombineDialog,
     combine_result_rx: Arc<Mutex<Option<Result<CombineResult, String>>>>,
     folders_dialog: FoldersDialog,
+    folder_load: Arc<Mutex<Option<FolderLoadResult>>>,
+    folder_load_progress: Arc<AtomicUsize>,
+    folder_load_total: Arc<AtomicUsize>,
+    folder_load_cancel: Arc<AtomicBool>,
+    folder_loading: bool,
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
@@ -107,6 +112,13 @@ struct LoadResult {
     error: Option<String>,
 }
 
+struct FolderLoadResult {
+    entries: Vec<MediaEntry>,
+    folders: Vec<PathBuf>,
+    start_file: Option<PathBuf>,
+    cancelled: bool,
+}
+
 impl KadrApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -130,6 +142,11 @@ impl KadrApp {
             combine_dialog: CombineDialog::default(),
             combine_result_rx: Arc::new(Mutex::new(None)),
             folders_dialog: FoldersDialog::default(),
+            folder_load: Arc::new(Mutex::new(None)),
+            folder_load_progress: Arc::new(AtomicUsize::new(0)),
+            folder_load_total: Arc::new(AtomicUsize::new(0)),
+            folder_load_cancel: Arc::new(AtomicBool::new(false)),
+            folder_loading: false,
             settings_dialog: SettingsDialog {
                 show_thumbnails: config.show_thumbnails,
                 scan_subfolders: config.scan_subfolders,
@@ -196,49 +213,90 @@ impl KadrApp {
     }
 
     fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        if self.folder_loading {
+            return;
+        }
+
+        self.folder_load_progress.store(0, Ordering::Relaxed);
+        self.folder_load_total.store(0, Ordering::Relaxed);
+        self.folder_load_cancel.store(false, Ordering::Relaxed);
+        *self.folder_load.lock().unwrap() = None;
+        self.folder_loading = true;
+
         let opts = ScanOptions {
             include_images: self.config.filter_images,
             include_videos: self.config.filter_videos,
             recursive: self.config.scan_subfolders,
         };
+        let sort_mode = self.config.viewer.sort_mode.clone();
+        let progress = Arc::clone(&self.folder_load_progress);
+        let total = Arc::clone(&self.folder_load_total);
+        let cancel = Arc::clone(&self.folder_load_cancel);
+        let result_slot = Arc::clone(&self.folder_load);
+        let ctx = self.egui_ctx.clone();
 
-        let mut start_file: Option<PathBuf> = None;
-        let mut folders: Vec<PathBuf> = Vec::new();
-        for p in &paths {
-            if p.is_file() {
-                start_file.get_or_insert_with(|| p.clone());
-                folders.push(p.parent().unwrap_or(p).to_path_buf());
-            } else {
-                folders.push(p.clone());
+        thread::spawn(move || {
+            crate::crash::guard_thread_stack();
+            let _crumb = crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
+
+            let mut start_file: Option<PathBuf> = None;
+            let mut folders: Vec<PathBuf> = Vec::new();
+            for p in &paths {
+                if p.is_file() {
+                    start_file.get_or_insert_with(|| p.clone());
+                    folders.push(p.parent().unwrap_or(p).to_path_buf());
+                } else {
+                    folders.push(p.clone());
+                }
             }
-        }
 
-        let mut entries: Vec<MediaEntry> = Vec::new();
-        for folder in &folders {
-            entries.extend(scan_folder(folder, &opts));
-        }
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        entries.dedup_by(|a, b| a.path == b.path);
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            for folder in &folders {
+                if cancel.load(Ordering::Relaxed) {
+                    *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                        entries: Vec::new(),
+                        folders: Vec::new(),
+                        start_file: None,
+                        cancelled: true,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+                candidates.extend(scan_candidates(folder, &opts));
+            }
+            total.store(candidates.len(), Ordering::Relaxed);
+            ctx.request_repaint();
 
-        sort_entries(&mut entries, &self.config.viewer.sort_mode);
+            let mut entries: Vec<MediaEntry> = Vec::with_capacity(candidates.len());
+            for path in candidates {
+                if cancel.load(Ordering::Relaxed) {
+                    *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                        entries: Vec::new(),
+                        folders: Vec::new(),
+                        start_file: None,
+                        cancelled: true,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+                if let Some(entry) = MediaEntry::from_path(path) {
+                    entries.push(entry);
+                }
+                progress.fetch_add(1, Ordering::Relaxed);
+            }
 
-        let start_index = start_file
-            .and_then(|f| entries.iter().position(|e| e.path == f))
-            .unwrap_or(0);
+            entries.sort_by(|a, b| a.path.cmp(&b.path));
+            entries.dedup_by(|a, b| a.path == b.path);
+            sort_entries(&mut entries, &sort_mode);
 
-        self.entries = entries;
-        self.current_index = start_index;
-        self.thumb_textures.clear();
-        self.thumb_pending.clear();
-        self.thumb_results.lock().unwrap().clear();
-        self.current_texture = None;
-        self.viewer_state.reset();
-        self.video_ctx = None;
-        self.video_texture = None;
-
-        self.config.last_paths = folders;
-
-        self.load_current_image();
+            *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                entries,
+                folders,
+                start_file,
+                cancelled: false,
+            });
+            ctx.request_repaint();
+        });
     }
 
     fn navigate(&mut self, delta: i64) {
@@ -1049,7 +1107,7 @@ impl eframe::App for KadrApp {
         }
 
         // Keyboard
-        if !self.settings_dialog.open && !self.combine_dialog.open {
+        if !self.settings_dialog.open && !self.combine_dialog.open && !self.folder_loading {
             self.handle_keyboard(&ctx);
         }
 
@@ -1063,6 +1121,36 @@ impl eframe::App for KadrApp {
         });
         if !dropped.is_empty() {
             self.open_paths(dropped);
+        }
+
+        if self.folder_loading {
+            let finished = self.folder_load.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(result) = finished {
+                self.folder_loading = false;
+                if !result.cancelled {
+                    self.entries = result.entries;
+                    self.current_index = result
+                        .start_file
+                        .and_then(|f| self.entries.iter().position(|e| e.path == f))
+                        .unwrap_or(0);
+                    self.thumb_textures.clear();
+                    self.thumb_pending.clear();
+                    self.thumb_results.lock().unwrap().clear();
+                    self.current_texture = None;
+                    self.viewer_state.reset();
+                    self.video_ctx = None;
+                    self.video_texture = None;
+                    self.config.last_paths = result.folders;
+                    self.load_current_image();
+                }
+            } else {
+                let done = self.folder_load_progress.load(Ordering::Relaxed);
+                let total = self.folder_load_total.load(Ordering::Relaxed);
+                if crate::ui::loading_overlay::show(&ctx, done, total) {
+                    self.folder_load_cancel.store(true, Ordering::Relaxed);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            }
         }
 
         let bg = self.bg_color32();
