@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
 const BASE_URL: &str = "https://bomzh.fm";
 
+#[allow(dead_code)]
 pub fn upload_file(path: &Path, api_key: &str, folder_id: &str) -> Result<String> {
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let filename = path
@@ -43,6 +45,7 @@ pub fn upload_file(path: &Path, api_key: &str, folder_id: &str) -> Result<String
     }
 }
 
+#[allow(dead_code)]
 pub fn expand_to_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for p in paths {
@@ -61,6 +64,7 @@ pub fn expand_to_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+#[allow(dead_code)]
 fn guess_mime(path: &Path) -> &'static str {
     match path
         .extension()
