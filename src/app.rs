@@ -9,7 +9,7 @@ use egui::{Color32, ColorImage, TextureHandle, Vec2, vec2};
 
 use crate::config::AppConfig;
 use crate::fs::combine::{CombineResult, combine_folders, count_images};
-use crate::fs::scanner::{ScanOptions, scan_folder};
+use crate::fs::scanner::{ScanOptions, scan_candidates};
 use crate::fs::sorter::sort_entries;
 use crate::keybinds::KeyAction;
 use crate::media::formats::{MediaEntry, MediaType};
@@ -21,6 +21,7 @@ use crate::slideshow::engine::{SlideshowEngine, TickResult};
 use crate::slideshow::lua_script::LuaSlideshowScript;
 use crate::slideshow::lua_script::SlideContext;
 use crate::ui::combine_dialog::{CombineAction, CombineDialog};
+use crate::ui::folders_dialog::{FoldersAction, FoldersDialog};
 use crate::ui::lua_editor::{LuaEditor, LuaEditorAction};
 use crate::ui::settings_dialog::{SettingsAction, SettingsDialog};
 use crate::ui::thumbnail_strip::{ThumbEntry, ThumbnailStrip};
@@ -29,7 +30,7 @@ use crate::ui::video_controls::{ControlsAction, show_video_controls};
 use crate::ui::viewer::{TransitionData, ViewerState, show_viewer};
 use crate::ui::widgets::theme;
 use crate::video::VideoContext;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const THUMB_CACHE_LIMIT: usize = 200;
 
@@ -52,6 +53,12 @@ pub struct KadrApp {
     fullscreen: bool,
     combine_dialog: CombineDialog,
     combine_result_rx: Arc<Mutex<Option<Result<CombineResult, String>>>>,
+    folders_dialog: FoldersDialog,
+    folder_load: Arc<Mutex<Option<FolderLoadResult>>>,
+    folder_load_progress: Arc<AtomicUsize>,
+    folder_load_total: Arc<AtomicUsize>,
+    folder_load_cancel: Arc<AtomicBool>,
+    folder_loading: bool,
     settings_dialog: SettingsDialog,
     lua_editor: LuaEditor,
     loading: Arc<Mutex<Option<LoadResult>>>,
@@ -105,12 +112,21 @@ struct LoadResult {
     error: Option<String>,
 }
 
+struct FolderLoadResult {
+    entries: Vec<MediaEntry>,
+    folders: Vec<PathBuf>,
+    start_file: Option<PathBuf>,
+    cancelled: bool,
+}
+
 impl KadrApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         open_path: Option<PathBuf>,
         config: AppConfig,
     ) -> Self {
+        crate::crash::reassert();
+        crate::crash::snapshot_modules();
         apply_theme(&cc.egui_ctx);
 
         let mut app = Self {
@@ -125,6 +141,12 @@ impl KadrApp {
             fullscreen: false,
             combine_dialog: CombineDialog::default(),
             combine_result_rx: Arc::new(Mutex::new(None)),
+            folders_dialog: FoldersDialog::default(),
+            folder_load: Arc::new(Mutex::new(None)),
+            folder_load_progress: Arc::new(AtomicUsize::new(0)),
+            folder_load_total: Arc::new(AtomicUsize::new(0)),
+            folder_load_cancel: Arc::new(AtomicBool::new(false)),
+            folder_loading: false,
             settings_dialog: SettingsDialog {
                 show_thumbnails: config.show_thumbnails,
                 scan_subfolders: config.scan_subfolders,
@@ -175,57 +197,106 @@ impl KadrApp {
         };
 
         let restore = if config.remember_last_folder {
-            config.last_path.clone()
+            config.last_paths.clone()
         } else {
-            None
+            Vec::new()
         };
-        if let Some(path) = open_path.or(restore) {
-            app.open_path(path);
+        let initial_paths = match open_path {
+            Some(p) => vec![p],
+            None => restore,
+        };
+        if !initial_paths.is_empty() {
+            app.open_paths(initial_paths);
         }
 
         app
     }
 
-    fn open_path(&mut self, path: PathBuf) {
+    fn open_paths(&mut self, paths: Vec<PathBuf>) {
+        if self.folder_loading {
+            return;
+        }
+
+        self.folder_load_progress.store(0, Ordering::Relaxed);
+        self.folder_load_total.store(0, Ordering::Relaxed);
+        self.folder_load_cancel.store(false, Ordering::Relaxed);
+        *self.folder_load.lock().unwrap() = None;
+        self.folder_loading = true;
+
         let opts = ScanOptions {
             include_images: self.config.filter_images,
             include_videos: self.config.filter_videos,
             recursive: self.config.scan_subfolders,
         };
+        let sort_mode = self.config.viewer.sort_mode.clone();
+        let progress = Arc::clone(&self.folder_load_progress);
+        let total = Arc::clone(&self.folder_load_total);
+        let cancel = Arc::clone(&self.folder_load_cancel);
+        let result_slot = Arc::clone(&self.folder_load);
+        let ctx = self.egui_ctx.clone();
 
-        let mut entries = if path.is_file() {
-            let folder = path.parent().unwrap_or(&path).to_path_buf();
-            scan_folder(&folder, &opts)
-        } else {
-            scan_folder(&path, &opts)
-        };
+        thread::spawn(move || {
+            crate::crash::guard_thread_stack();
+            let _crumb = crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
 
-        sort_entries(&mut entries, &self.config.viewer.sort_mode);
+            let mut start_file: Option<PathBuf> = None;
+            let mut folders: Vec<PathBuf> = Vec::new();
+            for p in &paths {
+                if p.is_file() {
+                    start_file.get_or_insert_with(|| p.clone());
+                    folders.push(p.parent().unwrap_or(p).to_path_buf());
+                } else {
+                    folders.push(p.clone());
+                }
+            }
 
-        let start_index = if path.is_file() {
-            entries.iter().position(|e| e.path == path).unwrap_or(0)
-        } else {
-            0
-        };
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            for folder in &folders {
+                if cancel.load(Ordering::Relaxed) {
+                    *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                        entries: Vec::new(),
+                        folders: Vec::new(),
+                        start_file: None,
+                        cancelled: true,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+                candidates.extend(scan_candidates(folder, &opts));
+            }
+            total.store(candidates.len(), Ordering::Relaxed);
+            ctx.request_repaint();
 
-        self.entries = entries;
-        self.current_index = start_index;
-        self.thumb_textures.clear();
-        self.thumb_pending.clear();
-        self.thumb_results.lock().unwrap().clear();
-        self.current_texture = None;
-        self.viewer_state.reset();
-        self.video_ctx = None;
-        self.video_texture = None;
+            let mut entries: Vec<MediaEntry> = Vec::with_capacity(candidates.len());
+            for path in candidates {
+                if cancel.load(Ordering::Relaxed) {
+                    *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                        entries: Vec::new(),
+                        folders: Vec::new(),
+                        start_file: None,
+                        cancelled: true,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+                if let Some(entry) = MediaEntry::from_path(path) {
+                    entries.push(entry);
+                }
+                progress.fetch_add(1, Ordering::Relaxed);
+            }
 
-        let folder = if path.is_file() {
-            path.parent().unwrap_or(&path).to_path_buf()
-        } else {
-            path
-        };
-        self.config.last_path = Some(folder);
+            entries.sort_by(|a, b| a.path.cmp(&b.path));
+            entries.dedup_by(|a, b| a.path == b.path);
+            sort_entries(&mut entries, &sort_mode);
 
-        self.load_current_image();
+            *result_slot.lock().unwrap() = Some(FolderLoadResult {
+                entries,
+                folders,
+                start_file,
+                cancelled: false,
+            });
+            ctx.request_repaint();
+        });
     }
 
     fn navigate(&mut self, delta: i64) {
@@ -280,6 +351,7 @@ impl KadrApp {
         self.preload_texture = None;
 
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("preloading {}", path.display()));
             if let Ok(img) = LoadedImage::load(&path) {
                 let result = LoadResult {
@@ -329,6 +401,7 @@ impl KadrApp {
         );
 
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             // If the process dies hard inside a decoder (an allocation abort on
             // a corrupt header, a stack overflow) neither the panic hook nor the
             // exception filter runs — this note on disk is what survives.
@@ -510,6 +583,7 @@ impl KadrApp {
             let mut pgdn = false;
             let mut pgup = false;
             let mut do_fullscreen = false;
+            let mut do_escape_fullscreen = false;
             let mut do_quit = false;
 
             ctx.input(|i| {
@@ -521,6 +595,7 @@ impl KadrApp {
                 pgdn = i.key_pressed(egui::Key::PageDown);
                 pgup = i.key_pressed(egui::Key::PageUp);
                 do_fullscreen = i.key_pressed(egui::Key::F11);
+                do_escape_fullscreen = i.key_pressed(egui::Key::Escape);
                 do_quit = i.modifiers.ctrl && i.key_pressed(egui::Key::Q);
             });
 
@@ -555,6 +630,10 @@ impl KadrApp {
                 self.fullscreen = !self.fullscreen;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
             }
+            if do_escape_fullscreen {
+                self.fullscreen = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
             if do_quit {
                 let _ = self.config.save();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -586,6 +665,7 @@ impl KadrApp {
         let mut do_pan_left = false;
         let mut do_pan_right = false;
         let mut do_fullscreen = false;
+        let mut do_escape_fullscreen = false;
         let mut do_toggle_thumbs = false;
         let mut do_rotate_cw = false;
         let mut do_rotate_ccw = false;
@@ -611,6 +691,7 @@ impl KadrApp {
             do_pan_right = bindings.is_action(&KeyAction::PanRight, input);
             do_fullscreen = bindings.is_action(&KeyAction::Fullscreen, input);
             do_toggle_thumbs = bindings.is_action(&KeyAction::ToggleThumbnails, input);
+            do_escape_fullscreen = input.key_pressed(egui::Key::Escape);
             do_rotate_cw = bindings.is_action(&KeyAction::RotateCW, input);
             do_rotate_ccw = bindings.is_action(&KeyAction::RotateCCW, input);
             do_flip_h = bindings.is_action(&KeyAction::FlipHorizontal, input);
@@ -663,6 +744,10 @@ impl KadrApp {
             self.fullscreen = !self.fullscreen;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
         }
+        if do_escape_fullscreen {
+            self.fullscreen = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
         if do_toggle_thumbs {
             self.config.show_thumbnails = !self.config.show_thumbnails;
         }
@@ -708,6 +793,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("rotating {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| save_image(&apply_rotation(img.image, degrees), &path))
@@ -727,6 +813,7 @@ impl KadrApp {
         let result_slot = Arc::clone(&self.transform_result);
         let ctx = self.egui_ctx.clone();
         thread::spawn(move || {
+            crate::crash::guard_thread_stack();
             let _crumb = crate::crash::Breadcrumb::new(format!("flipping {}", path.display()));
             let res = LoadedImage::load(&path)
                 .and_then(|img| {
@@ -745,9 +832,13 @@ impl KadrApp {
     }
 
     fn pick_folder(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().pick_folder() {
-            self.open_path(path);
-        }
+        self.folders_dialog.open = true;
+        self.folders_dialog.paths.clear();
+    }
+
+    fn add_folder(&mut self) {
+        self.folders_dialog.open = true;
+        self.folders_dialog.paths = self.config.last_paths.clone();
     }
 
     fn pick_file(&mut self) {
@@ -763,7 +854,7 @@ impl KadrApp {
             .add_filter("All media", &["*"])
             .pick_file()
         {
-            self.open_path(path);
+            self.open_paths(vec![path]);
         }
     }
 }
@@ -1016,7 +1107,7 @@ impl eframe::App for KadrApp {
         }
 
         // Keyboard
-        if !self.settings_dialog.open && !self.combine_dialog.open {
+        if !self.settings_dialog.open && !self.combine_dialog.open && !self.folder_loading {
             self.handle_keyboard(&ctx);
         }
 
@@ -1028,8 +1119,38 @@ impl eframe::App for KadrApp {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
-        if let Some(path) = dropped.into_iter().next() {
-            self.open_path(path);
+        if !dropped.is_empty() {
+            self.open_paths(dropped);
+        }
+
+        if self.folder_loading {
+            let finished = self.folder_load.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(result) = finished {
+                self.folder_loading = false;
+                if !result.cancelled {
+                    self.entries = result.entries;
+                    self.current_index = result
+                        .start_file
+                        .and_then(|f| self.entries.iter().position(|e| e.path == f))
+                        .unwrap_or(0);
+                    self.thumb_textures.clear();
+                    self.thumb_pending.clear();
+                    self.thumb_results.lock().unwrap().clear();
+                    self.current_texture = None;
+                    self.viewer_state.reset();
+                    self.video_ctx = None;
+                    self.video_texture = None;
+                    self.config.last_paths = result.folders;
+                    self.load_current_image();
+                }
+            } else {
+                let done = self.folder_load_progress.load(Ordering::Relaxed);
+                let total = self.folder_load_total.load(Ordering::Relaxed);
+                if crate::ui::loading_overlay::show(&ctx, done, total) {
+                    self.folder_load_cancel.store(true, Ordering::Relaxed);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(60));
+            }
         }
 
         let bg = self.bg_color32();
@@ -1081,75 +1202,80 @@ impl eframe::App for KadrApp {
             } // end !is_video
         }
 
-        egui::Panel::top("toolbar")
-            .frame(
-                egui::Frame::default()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin {
-                        left: 14,
-                        right: 14,
-                        top: 10,
-                        bottom: 8,
-                    }),
-            )
-            .show(ui, |ui| {
-                let sort_mode = self.config.viewer.sort_mode.clone();
-                let toolbar_resp = show_toolbar(
-                    ui,
-                    &sort_mode,
-                    self.config.filter_images,
-                    self.config.filter_videos,
-                    self.config.scan_subfolders,
-                    self.slideshow.active,
-                    self.entries.len(),
-                    if self.entries.is_empty() {
-                        None
-                    } else {
-                        Some(self.current_index)
-                    },
-                );
+        if !self.fullscreen {
+            egui::Panel::top("toolbar")
+                .frame(
+                    egui::Frame::default()
+                        .fill(theme::BG)
+                        .inner_margin(egui::Margin {
+                            left: 14,
+                            right: 14,
+                            top: 10,
+                            bottom: 8,
+                        }),
+                )
+                .show(ui, |ui| {
+                    let sort_mode = self.config.viewer.sort_mode.clone();
+                    let toolbar_resp = show_toolbar(
+                        ui,
+                        &sort_mode,
+                        self.config.filter_images,
+                        self.config.filter_videos,
+                        self.config.scan_subfolders,
+                        self.slideshow.active,
+                        self.entries.len(),
+                        if self.entries.is_empty() {
+                            None
+                        } else {
+                            Some(self.current_index)
+                        },
+                    );
 
-                if toolbar_resp.open_folder {
-                    self.pick_folder();
-                }
-                if toolbar_resp.open_file {
-                    self.pick_file();
-                }
-                if toolbar_resp.combine {
-                    self.combine_dialog.open = true;
-                }
-                if toolbar_resp.settings {
-                    self.settings_dialog.open = true;
-                }
-                if toolbar_resp.slideshow {
-                    self.slideshow.toggle();
-                }
+                    if toolbar_resp.open_folder {
+                        self.pick_folder();
+                    }
+                    if toolbar_resp.add_folder {
+                        self.add_folder();
+                    }
+                    if toolbar_resp.open_file {
+                        self.pick_file();
+                    }
+                    if toolbar_resp.combine {
+                        self.combine_dialog.open = true;
+                    }
+                    if toolbar_resp.settings {
+                        self.settings_dialog.open = true;
+                    }
+                    if toolbar_resp.slideshow {
+                        self.slideshow.toggle();
+                    }
 
-                if toolbar_resp.toggle_images {
-                    self.config.filter_images = !self.config.filter_images;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_images {
+                        self.config.filter_images = !self.config.filter_images;
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
+                        }
                     }
-                }
-                if toolbar_resp.toggle_videos {
-                    self.config.filter_videos = !self.config.filter_videos;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_videos {
+                        self.config.filter_videos = !self.config.filter_videos;
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
+                        }
                     }
-                }
-                if toolbar_resp.toggle_subfolders {
-                    self.config.scan_subfolders = !self.config.scan_subfolders;
-                    if let Some(folder) = self.config.last_path.clone() {
-                        self.open_path(folder);
+                    if toolbar_resp.toggle_subfolders {
+                        self.config.scan_subfolders = !self.config.scan_subfolders;
+                        if !self.config.last_paths.is_empty() {
+                            self.open_paths(self.config.last_paths.clone());
+                        }
                     }
-                }
-                if let Some(mode) = toolbar_resp.sort_changed {
-                    self.config.viewer.sort_mode = mode;
-                    self.apply_sort();
-                }
-            });
+                    if let Some(mode) = toolbar_resp.sort_changed {
+                        self.config.viewer.sort_mode = mode;
+                        self.apply_sort();
+                    }
+                });
+        }
 
-        if self.config.show_thumbnails && !self.entries.is_empty() {
+        if !self.fullscreen && self.config.show_thumbnails && !self.entries.is_empty() {
             let thumb_height = self.config.thumbnail_size + 10.0;
             let thumb_size = self.config.thumbnail_size;
             let current_index = self.current_index;
@@ -1459,6 +1585,7 @@ impl eframe::App for KadrApp {
                 let result_tx = Arc::clone(&self.combine_result_rx);
                 let ctx_clone = ctx.clone();
                 thread::spawn(move || {
+                    crate::crash::guard_thread_stack();
                     let res = combine_folders(&sources, &dest, progress).map_err(|e| e.to_string());
                     if let Ok(mut slot) = result_tx.lock() {
                         *slot = Some(res);
@@ -1471,6 +1598,22 @@ impl eframe::App for KadrApp {
                 self.combine_dialog.result_msg = None;
             }
             CombineAction::None => {}
+        }
+
+        match self.folders_dialog.show(&ctx) {
+            FoldersAction::AddFolders => {
+                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                    self.folders_dialog.paths.extend(paths);
+                }
+            }
+            FoldersAction::Open(paths) => {
+                self.folders_dialog.open = false;
+                self.open_paths(paths);
+            }
+            FoldersAction::Cancel => {
+                self.folders_dialog.open = false;
+            }
+            FoldersAction::None => {}
         }
 
         // Open Lua editor if settings requested it
@@ -1535,8 +1678,8 @@ impl eframe::App for KadrApp {
                     .update_interval(self.settings_dialog.slideshow_interval);
                 self.slideshow.transition_secs = self.settings_dialog.slideshow_transition;
 
-                if needs_rescan && let Some(folder) = self.config.last_path.clone() {
-                    self.open_path(folder);
+                if needs_rescan && !self.config.last_paths.is_empty() {
+                    self.open_paths(self.config.last_paths.clone());
                 }
 
                 // Recompile Lua script, show error in dialog if invalid
@@ -1569,6 +1712,7 @@ impl eframe::App for KadrApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::crash::mark_normal_exit();
         let _ = self.config.save();
     }
 }
@@ -1600,9 +1744,6 @@ fn apply_lua_cmd(
 }
 
 fn apply_theme(ctx: &egui::Context) {
-    // Tokyo Night: deep navy background, blue/purple accents. See
-    // `crate::ui::widgets::theme` for the full palette — these are the same
-    // constants, just wired into egui's global widget visuals here.
     let bg = theme::BG;
     let surface = theme::SURFACE;
     let surface2 = theme::SURFACE2;
@@ -1623,6 +1764,7 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.window_corner_radius = egui::CornerRadius::same(theme::RADIUS as u8);
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow::NONE;
+    visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
 
     visuals.selection.bg_fill = theme::accent_fill(60);
     visuals.selection.stroke = egui::Stroke::new(1.0, accent);
@@ -1647,7 +1789,6 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.hovered.corner_radius = radius;
     visuals.widgets.hovered.expansion = 1.0;
 
-    visuals.widgets.active.bg_fill = Color32::from_rgb(0x2b, 0x30, 0x54);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
     visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
     visuals.widgets.active.corner_radius = radius;
@@ -1662,10 +1803,10 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(14.0, 7.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 5.0);
+    style.spacing.button_padding = egui::vec2(11.0, 6.0);
     style.spacing.indent = 16.0;
-    style.spacing.interact_size = egui::vec2(40.0, 30.0);
+    style.spacing.interact_size = egui::vec2(36.0, 27.0);
     style.text_styles.insert(
         egui::TextStyle::Body,
         egui::FontId::new(13.5, egui::FontFamily::Proportional),

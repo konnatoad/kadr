@@ -3,7 +3,7 @@ use crate::media::{
     MediaEntry,
     formats::{is_image, is_video},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub struct ScanOptions {
@@ -22,7 +22,7 @@ impl Default for ScanOptions {
     }
 }
 
-pub fn scan_folder(folder: &Path, opts: &ScanOptions) -> Vec<MediaEntry> {
+pub fn scan_candidates(folder: &Path, opts: &ScanOptions) -> Vec<PathBuf> {
     let walker = if opts.recursive {
         WalkDir::new(folder).follow_links(true)
     } else {
@@ -39,7 +39,14 @@ pub fn scan_folder(folder: &Path, opts: &ScanOptions) -> Vec<MediaEntry> {
             let vid = opts.include_videos && is_video(path);
             img || vid
         })
-        .filter_map(|e| MediaEntry::from_path(e.into_path()))
+        .map(|e| e.into_path())
+        .collect()
+}
+
+pub fn scan_folder(folder: &Path, opts: &ScanOptions) -> Vec<MediaEntry> {
+    scan_candidates(folder, opts)
+        .into_iter()
+        .filter_map(MediaEntry::from_path)
         .collect()
 }
 

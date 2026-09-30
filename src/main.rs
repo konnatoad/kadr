@@ -13,6 +13,7 @@ mod media;
 mod monitor;
 mod slideshow;
 mod ui;
+mod upload;
 mod video;
 
 use anyhow::Result;
