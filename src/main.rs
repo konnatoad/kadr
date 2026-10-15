@@ -16,10 +16,17 @@ mod ui;
 mod upload;
 mod video;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 use app::KadrApp;
 
 fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--symbolize") {
+        if let Some(log) = args.next() {
+            crash::symbolize(std::path::Path::new(&log));
+        }
+        return Ok(());
+    }
     crash::install();
 
     if std::env::var("KADR_LOG").is_ok() {

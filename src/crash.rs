@@ -256,6 +256,7 @@ fn format_panic(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
     // depends on the build (release is `strip = "symbols"`), but the frame
     // addresses are always there.
     let backtrace = std::backtrace::Backtrace::force_capture();
+    let stack = capture_stack();
 
     let short = format!("{msg}\n\nat {location}\nthread: {thread}");
     let full = format!(
@@ -263,7 +264,7 @@ fn format_panic(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
          message       : {msg}\n\
          location      : {location}\n\
          thread        : {thread}\n\
-         \n---- backtrace ----\n{backtrace}"
+         \n---- backtrace ----\n{backtrace}\n\n{stack}"
     );
     (short, full)
 }
@@ -349,30 +350,7 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         let name = exception_name(code);
         let module = module_for(addr);
 
-        // Walk the stack and gather everything else before writing or showing
-        // anything — this used to happen after the popup, so a fault in the
-        // walk (touching a corrupted stack) silently ate the trace every time.
-        let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
-        let n = RtlCaptureStackBackTrace(
-            0,
-            frames.len() as u32,
-            frames.as_mut_ptr(),
-            core::ptr::null_mut(),
-        ) as usize;
-
-        let mut stack = String::new();
-        let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
-        for (i, frame) in frames.iter().take(n).enumerate() {
-            let ret = *frame as usize;
-            match module_for(ret) {
-                Some((m, off)) => {
-                    let _ = writeln!(stack, "  #{i:02}  {m}+0x{off:X}");
-                }
-                None => {
-                    let _ = writeln!(stack, "  #{i:02}  0x{ret:016X}");
-                }
-            }
-        }
+        let stack = capture_stack();
 
         let modules = loaded_modules();
         let crumb = take_breadcrumbs();
@@ -572,6 +550,191 @@ fn loaded_modules() -> String {
     String::new()
 }
 
+#[cfg(windows)]
+fn capture_stack() -> String {
+    use std::fmt::Write as _;
+    let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
+    // `frames` is a writable buffer of the length passed
+    // and the hash pointer may be null
+    let n = unsafe {
+        RtlCaptureStackBackTrace(
+            0,
+            frames.len() as u32,
+            frames.as_mut_ptr(),
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    let mut stack = String::new();
+    let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
+    for (i, frame) in frames.iter().take(n).enumerate() {
+        let ret = *frame as usize;
+        match module_for(ret) {
+            Some((m, off)) => {
+                let _ = writeln!(stack, "   #{i:02} {m}+0x{off:X}");
+            }
+            None => {
+                let _ = writeln!(stack, "   #{i:02} 0x{ret:016X}");
+            }
+        }
+    }
+    stack
+}
+
+#[cfg(not(windows))]
+fn capture_stack() -> String {
+    String::new()
+}
+
+#[cfg(windows)]
+fn build_id() -> String {
+    use winapi::um::libloaderapi::GetModuleHandleW;
+    use winapi::um::winnt::{IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64};
+    // GetModuleHandleW(null) returns .exe's own image base
+    // and stays mapped for the whole process lifetime
+    // and always begins with valid dos and nt headers which both read unaligned by value
+    // so no references to that memory are created
+    unsafe {
+        let base = GetModuleHandleW(core::ptr::null()) as *const u8;
+        if base.is_null() {
+            return String::from("unknown");
+        }
+        let dos = base.cast::<IMAGE_DOS_HEADER>().read_unaligned();
+        let nt = base
+            .add(dos.e_lfanew as usize)
+            .cast::<IMAGE_NT_HEADERS64>()
+            .read_unaligned();
+        format!(
+            "{:08X}{:X}",
+            nt.FileHeader.TimeDateStamp, nt.OptionalHeader.SizeOfImage
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn build_id() -> String {
+    String::from("unknown")
+}
+
+#[cfg(windows)]
+pub fn symbolize(log: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::dbghelp::{
+        IMAGEHLP_LINEW64, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME,
+        SymCleanup, SymFromAddrW, SymGetLineFromAddrW64, SymInitializeW, SymSetOptions,
+    };
+    use winapi::um::libloaderapi::GetModuleHandleW;
+    use winapi::um::processthreadsapi::GetCurrentProcess;
+
+    #[repr(C)]
+    struct SymBuf {
+        info: SYMBOL_INFOW,
+        name: [u16; 512],
+    }
+
+    let Ok(text) = std::fs::read_to_string(log) else {
+        show_popup(
+            "kadr - symbolize",
+            &format!("Could not read {}", log.display()),
+        );
+        return;
+    };
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default();
+    let search: Vec<u16> = exe_dir
+        .as_os_str()
+        .encode_wide()
+        .chain(core::iter::once(0))
+        .collect();
+    let build = build_id();
+    let mut out = String::with_capacity(text.len() * 2);
+    if !text.contains(&format!("build: {build}")) {
+        out.push_str(&format!(
+            "WARNING: this kadr.exe is build {build}, which does not match this log. The names below are wrong.\n\n"
+        ));
+    }
+
+    // dbghelp is used from this one thread only
+    // between SymInitializeW and SymCleanup
+    // `search` is nul terminated and outlives the calls
+    // `buf` is a zeroed repr(C) followed by 512 spare wchars
+    // matching MaxNameLen and is passed as a pointer to the whole buffer
+    // so dbghelp may write the name past the struct. name is read back from that same buffer
+    // capped at 512 and `FileName` points into dbghelp's own nul terminated storage
+    unsafe {
+        let process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        if SymInitializeW(process, search.as_ptr(), 1) == 0 {
+            show_popup("kadr - symbolize", "Could not initialise dbghelp.");
+            return;
+        }
+        let base = GetModuleHandleW(core::ptr::null()) as u64;
+        for line in text.lines() {
+            out.push_str(line);
+            if let Some(pos) = line.find("kadr.exe+0x") {
+                let hex: String = line[pos + 11..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect();
+
+                if let Ok(off) = u64::from_str_radix(&hex, 16) {
+                    let is_return = line.trim_start().starts_with('#');
+                    let addr = base + off - u64::from(is_return);
+                    let mut buf: SymBuf = core::mem::zeroed();
+                    buf.info.SizeOfStruct = core::mem::size_of::<SYMBOL_INFOW>() as u32;
+                    buf.info.MaxNameLen = 512;
+                    let mut disp: u64 = 0;
+                    if SymFromAddrW(
+                        process,
+                        addr,
+                        &mut disp,
+                        (&raw mut buf).cast::<SYMBOL_INFOW>(),
+                    ) != 0
+                    {
+                        let name_ptr = (&raw const buf)
+                            .cast::<u8>()
+                            .add(core::mem::offset_of!(SYMBOL_INFOW, Name))
+                            .cast::<u16>();
+                        let len = (buf.info.NameLen as usize).min(512);
+                        out.push_str("  ");
+                        out.push_str(&String::from_utf16_lossy(core::slice::from_raw_parts(
+                            name_ptr, len,
+                        )));
+                        let mut li: IMAGEHLP_LINEW64 = core::mem::zeroed();
+                        li.SizeOfStruct = core::mem::size_of::<IMAGEHLP_LINEW64>() as u32;
+                        let mut ldisp: u32 = 0;
+                        if SymGetLineFromAddrW64(process, addr, &mut ldisp, &mut li) != 0
+                            && !li.FileName.is_null()
+                        {
+                            let mut n = 0;
+                            while *li.FileName.add(n) != 0 {
+                                n += 1;
+                            }
+                            let file = String::from_utf16_lossy(core::slice::from_raw_parts(
+                                li.FileName,
+                                n,
+                            ));
+                            out.push_str(&format!(" ({file}:{})", li.LineNumber));
+                        }
+                    }
+                }
+            }
+            out.push('\n');
+        }
+        SymCleanup(process);
+    }
+    let dest = log.with_extension("sym.log");
+    let msg = match std::fs::write(&dest, out) {
+        Ok(()) => format!("Wrote {}", dest.display()),
+        Err(e) => format!("Could not write {}: {e}", dest.display()),
+    };
+    show_popup("kadr - symbolize", &msg);
+}
+
+#[cfg(not(windows))]
+pub fn symbolize(_log: &std::path::Path) {}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared reporter
 // ─────────────────────────────────────────────────────────────────────────────
@@ -615,9 +778,11 @@ fn write_log(version: &str, headline: &str, full: &str) -> Option<std::path::Pat
     let path = dir.join(format!("crash-{}.log", stamp_compact()));
 
     let when = stamp_human();
+    let build = build_id();
     let rule = "-".repeat(64);
     let contents = format!(
         "kadr {version} — crash report\n\
+         build: {build}\n\
          when : {when}\n\
          {headline}\n\
          {rule}\n\n\
