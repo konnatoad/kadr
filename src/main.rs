@@ -28,6 +28,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
     crash::install();
+    if std::env::args().nth(1).as_deref() == Some("--crash-test") {
+        crash::test(std::env::args().nth(2).as_deref().unwrap_or(""));
+        return Ok(());
+    }
 
     if std::env::var("KADR_LOG").is_ok() {
         env_logger::init();

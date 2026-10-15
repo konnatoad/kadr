@@ -167,6 +167,39 @@ fn pin_shell_modules() {
     }
 }
 
+pub fn test(kind: &str) {
+    let _crumb = Breadcrumb::new(format!("crash test: {kind}"));
+    match kind {
+        "panic" => panic!("crash test"),
+        "native" => raise_test_exception(),
+        "exit" => {
+            unsafe extern "C" {
+                fn exit(code: i32) -> !;
+            }
+            // SAFETY: C's exit() takes any int and never returns; it runs kadr's own atexit
+            // handler, which is what this test checks.
+            unsafe { exit(3) }
+        }
+        "hard" => std::process::abort(),
+        _ => show_popup(
+            "kadr — crash test",
+            "Usage: kadr --crash-test panic | native | exit | hard",
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn raise_test_exception() {
+    use winapi::um::errhandlingapi::RaiseException;
+    let args: [usize; 2] = [0, 0xDEAD];
+    // `args` holds the 2 values passed as the count and outlives the call.
+    // RaiseException only raises a windows exception nothing catches it, so it goes to kadr's own crash handler.
+    unsafe { RaiseException(0xC000_0005, 0, 2, args.as_ptr()) };
+}
+
+#[cfg(not(windows))]
+fn raise_test_exception() {}
+
 /// Give the current thread the same stack-overflow headroom the main thread
 /// gets, so `seh_filter` can still run if this thread overflows its stack.
 /// Call at the top of any `thread::spawn` closure that decodes files or calls
@@ -225,6 +258,8 @@ extern "C" fn on_process_exit() {
             what.replace('\n', "  —  ")
         ));
     }
+    full.push('\n');
+    full.push_str(&capture_stack());
     write_log(
         env!("CARGO_PKG_VERSION"),
         "kadr exited unexpectedly.",
