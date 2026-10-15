@@ -98,6 +98,8 @@ fn take_breadcrumbs() -> Option<String> {
 /// Install the panic hook and (on Windows) the unhandled-exception filter.
 /// Call this as the very first thing in `main()`.
 pub fn install() {
+    #[cfg(windows)]
+    pin_shell_modules();
     snapshot_modules();
 
     // A leftover breadcrumb means the last run died in a way neither hook can
@@ -135,6 +137,34 @@ pub fn install() {
 
     #[cfg(windows)]
     install_seh();
+}
+
+#[cfg(windows)]
+fn pin_shell_modules() {
+    use winapi::um::libloaderapi::{
+        GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+        LoadLibraryExW,
+    };
+    let name: Vec<u16> = "explorerframe.dll\0".encode_utf16().collect();
+    // `name` is a nul terminated utf-16 string that outlives both calls
+    // LoadLibraryExW gets a null file handle as the api requires
+    // LOAD_LIBRARY_SEARCH_SYSTEM32 maens only the real sys32 can be loaded
+    // planted DLL can't be picked up
+    // null return is handled by skipping the pin
+    // GetModuleHandleExW only writes the handle into `pinned`
+    // pinning just keeps the DLL loaded until the process exits so no memory is freed
+    // no pointers are dereferenced and no code from the DLL is called
+    unsafe {
+        let module = LoadLibraryExW(
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
+        if !module.is_null() {
+            let mut pinned: winapi::shared::minwindef::HMODULE = core::ptr::null_mut();
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, name.as_ptr(), &mut pinned);
+        }
+    }
 }
 
 /// Give the current thread the same stack-overflow headroom the main thread
@@ -186,12 +216,20 @@ extern "C" fn on_process_exit() {
         return;
     }
     let crumb = take_breadcrumbs();
-    let mut full =
-        String::from("kind          : process exited via exit(), not a panic or Windows exception\n");
+    let mut full = String::from(
+        "kind          : process exited via exit(), not a panic or Windows exception\n",
+    );
     if let Some(what) = &crumb {
-        full.push_str(&format!("last activity : {}\n", what.replace('\n', "  —  ")));
+        full.push_str(&format!(
+            "last activity : {}\n",
+            what.replace('\n', "  —  ")
+        ));
     }
-    write_log(env!("CARGO_PKG_VERSION"), "kadr exited unexpectedly.", &full);
+    write_log(
+        env!("CARGO_PKG_VERSION"),
+        "kadr exited unexpectedly.",
+        &full,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -429,7 +467,8 @@ fn exception_name(code: u32) -> &'static str {
 /// `snapshot_modules` while the process is healthy. Crash-time code reads
 /// this instead of asking the loader directly — see `snapshot_modules` for
 /// why.
-static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String)>> = std::sync::Mutex::new(Vec::new());
+static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Record the current module list somewhere crash-time code can read it
 /// without going through the loader. `GetModuleHandleExW`, `GetModuleFileNameW`
