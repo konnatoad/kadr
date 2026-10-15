@@ -16,7 +16,7 @@ mod ui;
 mod upload;
 mod video;
 
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use app::KadrApp;
 
 fn main() -> Result<()> {

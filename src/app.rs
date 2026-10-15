@@ -237,7 +237,8 @@ impl KadrApp {
 
         thread::spawn(move || {
             crate::crash::guard_thread_stack();
-            let _crumb = crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
+            let _crumb =
+                crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
 
             let mut start_file: Option<PathBuf> = None;
             let mut folders: Vec<PathBuf> = Vec::new();
@@ -1124,7 +1125,11 @@ impl eframe::App for KadrApp {
         }
 
         if self.folder_loading {
-            let finished = self.folder_load.lock().ok().and_then(|mut slot| slot.take());
+            let finished = self
+                .folder_load
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
             if let Some(result) = finished {
                 self.folder_loading = false;
                 if !result.cancelled {
@@ -1483,7 +1488,7 @@ impl eframe::App for KadrApp {
                 {
                     let painter = ctx.layer_painter(egui::LayerId::new(
                         egui::Order::Foreground,
-                        egui::Id::new("overlay"),
+                        egui::Id::unique("overlay"),
                     ));
                     let font_id = egui::FontId::proportional(13.0);
                     // Approximate pill width (avg ~7px per char at 13pt)
@@ -1522,7 +1527,7 @@ impl eframe::App for KadrApp {
                         };
                         ctx.layer_painter(egui::LayerId::new(
                             egui::Order::Foreground,
-                            egui::Id::new("status_overlay"),
+                            egui::Id::unique("status_overlay"),
                         ))
                         .text(
                             egui::pos2(24.0, screen.bottom() - thumb_offset - 20.0),
