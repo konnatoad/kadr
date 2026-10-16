@@ -32,6 +32,7 @@ fn main() -> Result<()> {
         crash::test(std::env::args().nth(2).as_deref().unwrap_or(""));
         return Ok(());
     }
+    crash::symbolize_pending();
 
     if std::env::var("KADR_LOG").is_ok() {
         env_logger::init();

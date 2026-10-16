@@ -651,7 +651,15 @@ fn build_id() -> String {
 }
 
 #[cfg(windows)]
-pub fn symbolize(log: &std::path::Path) {
+fn exe_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn symbolize_text(text: &str) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use winapi::um::dbghelp::{
         IMAGEHLP_LINEW64, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME,
@@ -666,18 +674,7 @@ pub fn symbolize(log: &std::path::Path) {
         name: [u16; 512],
     }
 
-    let Ok(text) = std::fs::read_to_string(log) else {
-        show_popup(
-            "kadr - symbolize",
-            &format!("Could not read {}", log.display()),
-        );
-        return;
-    };
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_default();
-    let search: Vec<u16> = exe_dir
+    let search: Vec<u16> = exe_dir()
         .as_os_str()
         .encode_wide()
         .chain(core::iter::once(0))
@@ -701,8 +698,7 @@ pub fn symbolize(log: &std::path::Path) {
         let process = GetCurrentProcess();
         SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
         if SymInitializeW(process, search.as_ptr(), 1) == 0 {
-            show_popup("kadr - symbolize", "Could not initialise dbghelp.");
-            return;
+            return None;
         }
         let base = GetModuleHandleW(core::ptr::null()) as u64;
         for line in text.lines() {
@@ -759,6 +755,22 @@ pub fn symbolize(log: &std::path::Path) {
         }
         SymCleanup(process);
     }
+    Some(out)
+}
+
+#[cfg(windows)]
+pub fn symbolize(log: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(log) else {
+        show_popup(
+            "kadr - symbolize",
+            &format!("Could not read {}", log.display()),
+        );
+        return;
+    };
+    let Some(out) = symbolize_text(&text) else {
+        show_popup("kadr - symbolize", "Could not initialise dbghelp.");
+        return;
+    };
     let dest = log.with_extension("sym.log");
     let msg = match std::fs::write(&dest, out) {
         Ok(()) => format!("Wrote {}", dest.display()),
@@ -767,8 +779,54 @@ pub fn symbolize(log: &std::path::Path) {
     show_popup("kadr - symbolize", &msg);
 }
 
+#[cfg(windows)]
+pub fn symbolize_pending() {
+    if !exe_dir().join("kadr.pdb").exists() {
+        return;
+    }
+    let exe_time = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let build = format!("build: {}", build_id());
+    let Ok(entries) = std::fs::read_dir(crate::config::kadr_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("crash-") || !name.ends_with(".log") || name.ends_with(".sym.log") {
+            continue;
+        }
+        let newer = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= exe_time);
+        if !newer {
+            continue;
+        }
+        let path = entry.path();
+        let dest = path.with_extension("sym.log");
+        if dest.exists() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !text.contains(&build) {
+            continue;
+        }
+        if let Some(out) = symbolize_text(&text) {
+            let _ = std::fs::write(&dest, out);
+        }
+    }
+}
+
 #[cfg(not(windows))]
 pub fn symbolize(_log: &std::path::Path) {}
+
+#[cfg(not(windows))]
+pub fn symbolize_pending() {}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared reporter
