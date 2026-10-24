@@ -23,7 +23,7 @@
 //! calling `exit()`. For those, [`Breadcrumb`] leaves a note on disk saying
 //! what kadr was doing; if it's still there next launch, `install()` shows it.
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Flipped to `true` the moment we start reporting a crash, so the
 /// panic-hook → `abort()` → structured-exception cascade only ever produces
@@ -36,6 +36,16 @@ static CRUMB_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Set once eframe's own shutdown starts, so the `atexit` hook can tell a
 /// normal close apart from an unexpected `exit()` call.
 static NORMAL_EXIT: AtomicBool = AtomicBool::new(false);
+
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+
+static COM_STATE: AtomicU8 = AtomicU8::new(0);
+
+static COM_TEST: AtomicBool = AtomicBool::new(false);
+
+static COM_LAST_ALIVE: std::sync::Mutex<&'static str> = std::sync::Mutex::new("");
+
+static COM_ALIVE_SINCE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Breadcrumbs — the catch-all for deaths that bypass both hooks
@@ -98,6 +108,8 @@ fn take_breadcrumbs() -> Option<String> {
 /// Install the panic hook and (on Windows) the unhandled-exception filter.
 /// Call this as the very first thing in `main()`.
 pub fn install() {
+    #[cfg(windows)]
+    remember_main_thread();
     #[cfg(windows)]
     pin_shell_modules();
     #[cfg(windows)]
@@ -999,7 +1011,8 @@ pub fn symbolize_pending() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with("crash-") || !name.ends_with(".log") || name.ends_with(".sym.log") {
+        let report = name.starts_with("crash-") || name.starts_with("diag-");
+        if !report || !name.ends_with(".log") || name.ends_with(".sym.log") {
             continue;
         }
         let newer = entry
@@ -1031,6 +1044,113 @@ pub fn symbolize(_log: &std::path::Path) {}
 
 #[cfg(not(windows))]
 pub fn symbolize_pending() {}
+
+#[cfg(windows)]
+fn remember_main_thread() {
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+    // GetCurrentThreadId has no preconditions
+    MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+}
+
+pub fn enable_com_test() {
+    COM_TEST.store(true, Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn com_apartment() -> (bool, i32, u32, u32) {
+    use winapi::um::combaseapi::CoGetApartmentType;
+    use winapi::um::objidlbase::{APTTYPE_MAINSTA, APTTYPE_STA};
+    let mut kind: u32 = 0;
+    let mut qualifier: u32 = 0;
+    // both out pointers are valid locals that live for the call
+    let hr = unsafe { CoGetApartmentType(&mut kind, &mut qualifier) };
+    let alive = hr == 0 && (kind == APTTYPE_STA || kind == APTTYPE_MAINSTA);
+    (alive, hr, kind, qualifier)
+}
+
+#[cfg(windows)]
+pub fn com_check(label: &'static str) {
+    use winapi::um::combaseapi::CoUninitialize;
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+    let state = COM_STATE.load(Ordering::Relaxed);
+    if state == 2 {
+        return;
+    }
+    // GetCurrentThreadId has no preconditions
+    if unsafe { GetCurrentThreadId() } != MAIN_THREAD.load(Ordering::Relaxed) {
+        return;
+    }
+    let (mut alive, mut hr, mut kind, mut qualifier) = com_apartment();
+    let mut label = label;
+    if state == 1
+        && alive
+        && COM_TEST.load(Ordering::Relaxed)
+        && COM_ALIVE_SINCE
+            .get()
+            .is_some_and(|t| t.elapsed().as_secs() >= 3)
+    {
+        COM_TEST.store(false, Ordering::Relaxed);
+        for _ in 0..32 {
+            // CoUninitialize has no memory preconditions
+            // this is the deliberate --com-test teardown and extra calls are no-ops
+            unsafe { CoUninitialize() };
+            (alive, hr, kind, qualifier) = com_apartment();
+            if !alive {
+                break;
+            }
+        }
+        label = "com-test";
+    }
+    match (state, alive) {
+        (0, true) => {
+            COM_STATE.store(1, Ordering::Relaxed);
+            let _ = COM_ALIVE_SINCE.set(std::time::Instant::now());
+            if let Ok(mut last) = COM_LAST_ALIVE.lock() {
+                *last = label;
+            }
+        }
+        (1, true) => {
+            if let Ok(mut last) = COM_LAST_ALIVE.lock() {
+                *last = label;
+            }
+        }
+        (1, false) => {
+            COM_STATE.store(2, Ordering::Relaxed);
+            let last = COM_LAST_ALIVE.lock().map(|l| *l).unwrap_or("?");
+            write_com_diag(last, label, hr, kind, qualifier);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(not(windows))]
+pub fn com_check(_label: &'static str) {}
+
+#[cfg(windows)]
+fn write_com_diag(last: &str, label: &str, hr: i32, kind: u32, qualifier: u32) {
+    let mut full = String::from(
+        "kind          : COM was shut down on the UI thread (kadr kept running)\n",
+    );
+    full.push_str(&format!("alive at      : {last}\n"));
+    full.push_str(&format!("dead at       : {label}\n"));
+    full.push_str(&format!(
+        "apartment     : hr=0x{:08X} type={kind} qualifier={qualifier}\n",
+        hr as u32
+    ));
+    full.push('\n');
+    full.push_str(&capture_stack());
+    full.push('\n');
+    full.push_str(&dll_history());
+    full.push('\n');
+    full.push_str(&loaded_modules());
+    write_report(
+        "diag",
+        "diagnostic report",
+        env!("CARGO_PKG_VERSION"),
+        "COM was shut down on the UI thread. kadr kept running; this shows what did it.",
+        &full,
+    );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared reporter
@@ -1072,15 +1192,25 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
 }
 
 fn write_log(version: &str, headline: &str, full: &str) -> Option<std::path::PathBuf> {
+    write_report("crash", "crash report", version, headline, full)
+}
+
+fn write_report(
+    prefix: &str,
+    title: &str,
+    version: &str,
+    headline: &str,
+    full: &str,
+) -> Option<std::path::PathBuf> {
     let dir = crate::config::kadr_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("crash-{}.log", stamp_compact()));
+    let path = dir.join(format!("{prefix}-{}.log", stamp_compact()));
 
     let when = stamp_human();
     let build = build_id();
     let rule = "-".repeat(64);
     let contents = format!(
-        "kadr {version} — crash report\n\
+        "kadr {version} — {title}\n\
          build: {build}\n\
          when : {when}\n\
          {headline}\n\

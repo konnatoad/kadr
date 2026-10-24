@@ -57,6 +57,8 @@ winapi = { version = "0.3", features = [
   "sysinfoapi",
   "psapi",
   "dbghelp",
+  "combaseapi",
+  "objidlbase",
 ] }
 
 [build-dependencies]

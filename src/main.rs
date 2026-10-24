@@ -33,6 +33,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
     crash::symbolize_pending();
+    if std::env::args().nth(1).as_deref() == Some("--com-test") {
+        crash::enable_com_test();
+    }
 
     if std::env::var("KADR_LOG").is_ok() {
         env_logger::init();
@@ -43,7 +46,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let open_path = std::env::args().nth(1).map(std::path::PathBuf::from);
+    let open_path = std::env::args()
+        .nth(1)
+        .filter(|a| !a.starts_with("--"))
+        .map(std::path::PathBuf::from);
     let config = config::AppConfig::load();
 
     const WIN_W: f32 = 1280.0;
