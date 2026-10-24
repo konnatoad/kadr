@@ -237,7 +237,8 @@ impl KadrApp {
 
         thread::spawn(move || {
             crate::crash::guard_thread_stack();
-            let _crumb = crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
+            let _crumb =
+                crate::crash::Breadcrumb::new(format!("opening {} folder(s)", paths.len()));
 
             let mut start_file: Option<PathBuf> = None;
             let mut folders: Vec<PathBuf> = Vec::new();
@@ -842,7 +843,8 @@ impl KadrApp {
     }
 
     fn pick_file(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
+        crate::crash::com_check("before open-file dialog");
+        let picked = rfd::FileDialog::new()
             .add_filter(
                 "Images",
                 &[
@@ -852,8 +854,9 @@ impl KadrApp {
             )
             .add_filter("Videos", &["mp4", "mkv", "avi", "mov", "wmv", "webm"])
             .add_filter("All media", &["*"])
-            .pick_file()
-        {
+            .pick_file();
+        crate::crash::com_check("after open-file dialog");
+        if let Some(path) = picked {
             self.open_paths(vec![path]);
         }
     }
@@ -861,6 +864,7 @@ impl KadrApp {
 
 impl eframe::App for KadrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        crate::crash::com_check("frame start");
         let ctx = ui.ctx().clone();
 
         // Force window onto the preferred monitor using physical-pixel SetWindowPos.
@@ -1124,7 +1128,11 @@ impl eframe::App for KadrApp {
         }
 
         if self.folder_loading {
-            let finished = self.folder_load.lock().ok().and_then(|mut slot| slot.take());
+            let finished = self
+                .folder_load
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take());
             if let Some(result) = finished {
                 self.folder_loading = false;
                 if !result.cancelled {
@@ -1483,7 +1491,7 @@ impl eframe::App for KadrApp {
                 {
                     let painter = ctx.layer_painter(egui::LayerId::new(
                         egui::Order::Foreground,
-                        egui::Id::new("overlay"),
+                        egui::Id::unique("overlay"),
                     ));
                     let font_id = egui::FontId::proportional(13.0);
                     // Approximate pill width (avg ~7px per char at 13pt)
@@ -1522,7 +1530,7 @@ impl eframe::App for KadrApp {
                         };
                         ctx.layer_painter(egui::LayerId::new(
                             egui::Order::Foreground,
-                            egui::Id::new("status_overlay"),
+                            egui::Id::unique("status_overlay"),
                         ))
                         .text(
                             egui::pos2(24.0, screen.bottom() - thumb_offset - 20.0),
@@ -1565,12 +1573,18 @@ impl eframe::App for KadrApp {
         let combine_action = self.combine_dialog.show(&ctx);
         match combine_action {
             CombineAction::PickSources => {
-                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                crate::crash::com_check("before combine-sources dialog");
+                let picked = rfd::FileDialog::new().pick_folders();
+                crate::crash::com_check("after combine-sources dialog");
+                if let Some(paths) = picked {
                     self.combine_dialog.source_paths.extend(paths);
                 }
             }
             CombineAction::PickDest => {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                crate::crash::com_check("before combine-dest dialog");
+                let picked = rfd::FileDialog::new().pick_folder();
+                crate::crash::com_check("after combine-dest dialog");
+                if let Some(path) = picked {
                     self.combine_dialog.dest_parent = Some(path);
                 }
             }
@@ -1602,7 +1616,10 @@ impl eframe::App for KadrApp {
 
         match self.folders_dialog.show(&ctx) {
             FoldersAction::AddFolders => {
-                if let Some(paths) = rfd::FileDialog::new().pick_folders() {
+                crate::crash::com_check("before add-folders dialog");
+                let picked = rfd::FileDialog::new().pick_folders();
+                crate::crash::com_check("after add-folders dialog");
+                if let Some(paths) = picked {
                     self.folders_dialog.paths.extend(paths);
                 }
             }
@@ -1709,6 +1726,7 @@ impl eframe::App for KadrApp {
             }
             SettingsAction::None => {}
         }
+        crate::crash::com_check("frame end");
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

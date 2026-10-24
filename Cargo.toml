@@ -1,6 +1,6 @@
 [package]
 name = "kadr"
-version = "1.6.0"
+version = "1.6.1-beta.3"
 edition = "2024"
 description = "A fast, minimal image viewer"
 
@@ -56,6 +56,9 @@ winapi = { version = "0.3", features = [
   "minwinbase",
   "sysinfoapi",
   "psapi",
+  "dbghelp",
+  "combaseapi",
+  "objidlbase",
 ] }
 
 [build-dependencies]

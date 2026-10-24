@@ -23,7 +23,7 @@
 //! calling `exit()`. For those, [`Breadcrumb`] leaves a note on disk saying
 //! what kadr was doing; if it's still there next launch, `install()` shows it.
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Flipped to `true` the moment we start reporting a crash, so the
 /// panic-hook → `abort()` → structured-exception cascade only ever produces
@@ -36,6 +36,16 @@ static CRUMB_SEQ: AtomicU64 = AtomicU64::new(0);
 /// Set once eframe's own shutdown starts, so the `atexit` hook can tell a
 /// normal close apart from an unexpected `exit()` call.
 static NORMAL_EXIT: AtomicBool = AtomicBool::new(false);
+
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+
+static COM_STATE: AtomicU8 = AtomicU8::new(0);
+
+static COM_TEST: AtomicBool = AtomicBool::new(false);
+
+static COM_LAST_ALIVE: std::sync::Mutex<&'static str> = std::sync::Mutex::new("");
+
+static COM_ALIVE_SINCE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Breadcrumbs — the catch-all for deaths that bypass both hooks
@@ -98,6 +108,12 @@ fn take_breadcrumbs() -> Option<String> {
 /// Install the panic hook and (on Windows) the unhandled-exception filter.
 /// Call this as the very first thing in `main()`.
 pub fn install() {
+    #[cfg(windows)]
+    remember_main_thread();
+    #[cfg(windows)]
+    pin_shell_modules();
+    #[cfg(windows)]
+    watch_dlls();
     snapshot_modules();
 
     // A leftover breadcrumb means the last run died in a way neither hook can
@@ -136,6 +152,67 @@ pub fn install() {
     #[cfg(windows)]
     install_seh();
 }
+
+#[cfg(windows)]
+fn pin_shell_modules() {
+    use winapi::um::libloaderapi::{
+        GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+        LoadLibraryExW,
+    };
+    let name: Vec<u16> = "explorerframe.dll\0".encode_utf16().collect();
+    // `name` is a nul terminated utf-16 string that outlives both calls
+    // LoadLibraryExW gets a null file handle as the api requires
+    // LOAD_LIBRARY_SEARCH_SYSTEM32 maens only the real sys32 can be loaded
+    // planted DLL can't be picked up
+    // null return is handled by skipping the pin
+    // GetModuleHandleExW only writes the handle into `pinned`
+    // pinning just keeps the DLL loaded until the process exits so no memory is freed
+    // no pointers are dereferenced and no code from the DLL is called
+    unsafe {
+        let module = LoadLibraryExW(
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
+        if !module.is_null() {
+            let mut pinned: winapi::shared::minwindef::HMODULE = core::ptr::null_mut();
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, name.as_ptr(), &mut pinned);
+        }
+    }
+}
+
+pub fn test(kind: &str) {
+    let _crumb = Breadcrumb::new(format!("crash test: {kind}"));
+    match kind {
+        "panic" => panic!("crash test"),
+        "native" => raise_test_exception(),
+        "exit" => {
+            unsafe extern "C" {
+                fn exit(code: i32) -> !;
+            }
+            // SAFETY: C's exit() takes any int and never returns; it runs kadr's own atexit
+            // handler, which is what this test checks.
+            unsafe { exit(3) }
+        }
+        "hard" => std::process::abort(),
+        _ => show_popup(
+            "kadr — crash test",
+            "Usage: kadr --crash-test panic | native | exit | hard",
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn raise_test_exception() {
+    use winapi::um::errhandlingapi::RaiseException;
+    let args: [usize; 2] = [0, 0xDEAD];
+    // `args` holds the 2 values passed as the count and outlives the call.
+    // RaiseException only raises a windows exception nothing catches it, so it goes to kadr's own crash handler.
+    unsafe { RaiseException(0xC000_0005, 0, 2, args.as_ptr()) };
+}
+
+#[cfg(not(windows))]
+fn raise_test_exception() {}
 
 /// Give the current thread the same stack-overflow headroom the main thread
 /// gets, so `seh_filter` can still run if this thread overflows its stack.
@@ -186,12 +263,26 @@ extern "C" fn on_process_exit() {
         return;
     }
     let crumb = take_breadcrumbs();
-    let mut full =
-        String::from("kind          : process exited via exit(), not a panic or Windows exception\n");
+    let mut full = String::from(
+        "kind          : process exited via exit(), not a panic or Windows exception\n",
+    );
     if let Some(what) = &crumb {
-        full.push_str(&format!("last activity : {}\n", what.replace('\n', "  —  ")));
+        full.push_str(&format!(
+            "last activity : {}\n",
+            what.replace('\n', "  —  ")
+        ));
     }
-    write_log(env!("CARGO_PKG_VERSION"), "kadr exited unexpectedly.", &full);
+    full.push('\n');
+    full.push_str(&capture_stack());
+    full.push('\n');
+    full.push_str(&dll_history());
+    full.push('\n');
+    full.push_str(&loaded_modules());
+    write_log(
+        env!("CARGO_PKG_VERSION"),
+        "kadr exited unexpectedly.",
+        &full,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +309,7 @@ fn format_panic(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
     // depends on the build (release is `strip = "symbols"`), but the frame
     // addresses are always there.
     let backtrace = std::backtrace::Backtrace::force_capture();
+    let stack = capture_stack();
 
     let short = format!("{msg}\n\nat {location}\nthread: {thread}");
     let full = format!(
@@ -225,7 +317,7 @@ fn format_panic(info: &std::panic::PanicHookInfo<'_>) -> (String, String) {
          message       : {msg}\n\
          location      : {location}\n\
          thread        : {thread}\n\
-         \n---- backtrace ----\n{backtrace}"
+         \n---- backtrace ----\n{backtrace}\n\n{stack}"
     );
     (short, full)
 }
@@ -311,32 +403,10 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         let name = exception_name(code);
         let module = module_for(addr);
 
-        // Walk the stack and gather everything else before writing or showing
-        // anything — this used to happen after the popup, so a fault in the
-        // walk (touching a corrupted stack) silently ate the trace every time.
-        let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
-        let n = RtlCaptureStackBackTrace(
-            0,
-            frames.len() as u32,
-            frames.as_mut_ptr(),
-            core::ptr::null_mut(),
-        ) as usize;
-
-        let mut stack = String::new();
-        let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
-        for (i, frame) in frames.iter().take(n).enumerate() {
-            let ret = *frame as usize;
-            match module_for(ret) {
-                Some((m, off)) => {
-                    let _ = writeln!(stack, "  #{i:02}  {m}+0x{off:X}");
-                }
-                None => {
-                    let _ = writeln!(stack, "  #{i:02}  0x{ret:016X}");
-                }
-            }
-        }
+        let stack = capture_stack();
 
         let modules = loaded_modules();
+        let history = dll_history();
         let crumb = take_breadcrumbs();
 
         let mut short = String::new();
@@ -381,6 +451,8 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         }
         let _ = writeln!(full);
         let _ = write!(full, "{stack}");
+        let _ = writeln!(full);
+        let _ = write!(full, "{history}");
         let _ = writeln!(full);
         let _ = write!(full, "{modules}");
 
@@ -429,7 +501,8 @@ fn exception_name(code: u32) -> &'static str {
 /// `snapshot_modules` while the process is healthy. Crash-time code reads
 /// this instead of asking the loader directly — see `snapshot_modules` for
 /// why.
-static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String)>> = std::sync::Mutex::new(Vec::new());
+static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String, bool)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// Record the current module list somewhere crash-time code can read it
 /// without going through the loader. `GetModuleHandleExW`, `GetModuleFileNameW`
@@ -477,14 +550,20 @@ pub fn snapshot_modules() {
                     core::mem::size_of::<MODULEINFO>() as u32,
                 ) != 0
                 {
-                    list.push((info.lpBaseOfDll as usize, info.SizeOfImage as usize, name));
+                    list.push((
+                        info.lpBaseOfDll as usize,
+                        info.SizeOfImage as usize,
+                        name,
+                        false,
+                    ));
                 }
             }
         }
     }
 
     if let Ok(mut cache) = MODULE_CACHE.lock() {
-        *cache = list;
+        cache.retain(|m| m.3);
+        cache.extend(list);
     }
 }
 
@@ -498,13 +577,17 @@ fn module_for(addr: usize) -> Option<(String, usize)> {
     if addr == 0 {
         return None;
     }
-    let cache = MODULE_CACHE.lock().ok()?;
-    for (base, size, name) in cache.iter() {
+    let cache = MODULE_CACHE.try_lock().ok()?;
+    let mut unloaded = None;
+    for (base, size, name, gone) in cache.iter() {
         if addr >= *base && addr < base + size {
-            return Some((name.clone(), addr - base));
+            if !gone {
+                return Some((name.clone(), addr - base));
+            }
+            unloaded = Some((format!("{name}[unloaded]"), addr - base))
         }
     }
-    None
+    unloaded
 }
 
 /// Every loaded module's name, base address and size, from the snapshot —
@@ -515,10 +598,14 @@ fn loaded_modules() -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "---- loaded modules ----");
-    match MODULE_CACHE.lock() {
+    match MODULE_CACHE.try_lock() {
         Ok(cache) if !cache.is_empty() => {
-            for (base, size, name) in cache.iter() {
-                let _ = writeln!(out, "  {name:<28} base=0x{base:016X}  size=0x{size:X}");
+            for (base, size, name, gone) in cache.iter() {
+                let mark = if *gone { " [unloaded]" } else { "" };
+                let _ = writeln!(
+                    out,
+                    "  {name:<28} base=0x{base:016X}  size=0x{size:X}{mark}"
+                );
             }
         }
         _ => {
@@ -531,6 +618,538 @@ fn loaded_modules() -> String {
 #[cfg(not(windows))]
 fn loaded_modules() -> String {
     String::new()
+}
+
+#[cfg(windows)]
+fn capture_stack() -> String {
+    use std::fmt::Write as _;
+    let mut frames: [*mut core::ffi::c_void; 62] = [core::ptr::null_mut(); 62];
+    // `frames` is a writable buffer of the length passed
+    // and the hash pointer may be null
+    let n = unsafe {
+        RtlCaptureStackBackTrace(
+            0,
+            frames.len() as u32,
+            frames.as_mut_ptr(),
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    let mut stack = String::new();
+    let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
+    stack.push_str(&frames_text(&frames[..n.min(frames.len())], "   "));
+    stack
+}
+
+#[cfg(not(windows))]
+fn capture_stack() -> String {
+    String::new()
+}
+
+#[cfg(windows)]
+fn frames_text(frames: &[*mut core::ffi::c_void], indent: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let retard = *frame as usize;
+        match module_for(retard) {
+            Some((m, off)) => {
+                let _ = writeln!(out, "{indent}#{i:02} {m}+0x{off:X}");
+            }
+            None => {
+                let _ = writeln!(out, "{indent}#{i:02} 0x{retard:016X}");
+            }
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct UniString {
+    length: u16,
+    _maximum_length: u16,
+    buffer: *const u16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct DLLNotifData {
+    _flags: u32,
+    _full_dll_name: *const UniString,
+    base_dll_name: *const UniString,
+    dll_base: *mut core::ffi::c_void,
+    image_size: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct DLLEvent {
+    when: String,
+    thread: u32,
+    loaded: bool,
+    name: String,
+    base: usize,
+    stack: String,
+}
+
+#[cfg(windows)]
+static DLL_EVENTS: std::sync::Mutex<std::collections::VecDeque<DLLEvent>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(windows)]
+extern "system" fn dll_notif(
+    reason: u32,
+    data: *const DLLNotifData,
+    _context: *mut core::ffi::c_void,
+) {
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+
+    if data.is_null() || REPORTING.load(Ordering::SeqCst) {
+        return;
+    }
+    let loaded = reason == 1;
+    // data is null checked and the loadder keeps it valid
+    // length is halved for the u16 count
+    let (name, base, size, thread) = unsafe {
+        let data = &*data;
+        let name = match data.base_dll_name.as_ref() {
+            Some(s) if !s.buffer.is_null() => String::from_utf16_lossy(
+                core::slice::from_raw_parts(s.buffer, s.length as usize / 2),
+            ),
+            _ => String::from("?"),
+        };
+        (
+            name,
+            data.dll_base as usize,
+            data.image_size as usize,
+            GetCurrentThreadId(),
+        )
+    };
+    let stack = if loaded {
+        String::new()
+    } else {
+        let mut frames: [*mut core::ffi::c_void; 24] = [core::ptr::null_mut(); 24];
+        // frames is writeable buffer of passed length
+        // and the hash pointer may be null
+        let miguel = unsafe {
+            RtlCaptureStackBackTrace(
+                1,
+                frames.len() as u32,
+                frames.as_mut_ptr(),
+                core::ptr::null_mut(),
+            )
+        } as usize;
+        frames_text(&frames[..miguel.min(frames.len())], "      ")
+    };
+    if let Ok(mut cache) = MODULE_CACHE.lock() {
+        if loaded {
+            if !cache.iter().any(|m| m.0 == base && !m.3) {
+                cache.push((base, size, name.clone(), false));
+            }
+        } else if let Some(m) = cache.iter_mut().find(|m| m.0 == base && !m.3) {
+            m.3 = true;
+        }
+    }
+    let event = DLLEvent {
+        when: stamp_human(),
+        thread,
+        loaded,
+        name,
+        base,
+        stack,
+    };
+    if let Ok(mut events) = DLL_EVENTS.lock() {
+        if events.len() >= 48 {
+            match events.iter().position(|e| e.loaded) {
+                Some(i) => {
+                    events.remove(i);
+                }
+                None => {
+                    events.pop_front();
+                }
+            }
+        }
+        events.push_back(event);
+    }
+}
+
+#[cfg(windows)]
+fn watch_dlls() {
+    use winapi::shared::minwindef::FARPROC;
+    use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress};
+    type Callback = unsafe extern "system" fn(u32, *const DLLNotifData, *mut core::ffi::c_void);
+    type Register = unsafe extern "system" fn(
+        u32,
+        Callback,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> i32;
+    let ntdll: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+    // `ntdll` is nul terminated and outlives the calls
+    // ntdll is always loaded so the handle is never freed
+    // LdrRegisterDllNotification has exactly the `Register` signature
+    // and `dll_notif` matches the callback type it expects
+    unsafe {
+        let module = GetModuleHandleW(ntdll.as_ptr());
+        if module.is_null() {
+            return;
+        }
+        let proc = GetProcAddress(module, c"LdrRegisterDllNotification".as_ptr());
+        if proc.is_null() {
+            return;
+        }
+        let register = core::mem::transmute::<FARPROC, Register>(proc);
+        let mut cookie: *mut core::ffi::c_void = core::ptr::null_mut();
+        register(0, dll_notif, core::ptr::null_mut(), &mut cookie);
+    }
+}
+
+#[cfg(windows)]
+fn dll_history() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "---- DLL history ----");
+    match DLL_EVENTS.try_lock() {
+        Ok(events) if !events.is_empty() => {
+            for e in events.iter() {
+                let what = if e.loaded { "load  " } else { "UNLOAD" };
+                let _ = writeln!(
+                    out,
+                    "  {}  {what}  {:<28} base=0x{:016X}  thread {}",
+                    e.when, e.name, e.base, e.thread
+                );
+                out.push_str(&e.stack);
+            }
+        }
+        Ok(_) => {
+            let _ = writeln!(out, "  (none since startup)");
+        }
+        Err(_) => {
+            let _ = writeln!(out, "  (busy)");
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn dll_history() -> String {
+    String::new()
+}
+
+#[cfg(windows)]
+fn build_id() -> String {
+    use winapi::um::libloaderapi::GetModuleHandleW;
+    use winapi::um::winnt::{IMAGE_DOS_HEADER, IMAGE_NT_HEADERS64};
+    // GetModuleHandleW(null) returns .exe's own image base
+    // and stays mapped for the whole process lifetime
+    // and always begins with valid dos and nt headers which both read unaligned by value
+    // so no references to that memory are created
+    unsafe {
+        let base = GetModuleHandleW(core::ptr::null()) as *const u8;
+        if base.is_null() {
+            return String::from("unknown");
+        }
+        let dos = base.cast::<IMAGE_DOS_HEADER>().read_unaligned();
+        let nt = base
+            .add(dos.e_lfanew as usize)
+            .cast::<IMAGE_NT_HEADERS64>()
+            .read_unaligned();
+        format!(
+            "{:08X}{:X}",
+            nt.FileHeader.TimeDateStamp, nt.OptionalHeader.SizeOfImage
+        )
+    }
+}
+
+#[cfg(not(windows))]
+fn build_id() -> String {
+    String::from("unknown")
+}
+
+#[cfg(windows)]
+fn exe_dir() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn symbolize_text(text: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::dbghelp::{
+        IMAGEHLP_LINEW64, SYMBOL_INFOW, SYMOPT_DEFERRED_LOADS, SYMOPT_LOAD_LINES, SYMOPT_UNDNAME,
+        SymCleanup, SymFromAddrW, SymGetLineFromAddrW64, SymInitializeW, SymSetOptions,
+    };
+    use winapi::um::libloaderapi::GetModuleHandleW;
+    use winapi::um::processthreadsapi::GetCurrentProcess;
+
+    #[repr(C)]
+    struct SymBuf {
+        info: SYMBOL_INFOW,
+        name: [u16; 512],
+    }
+
+    let search: Vec<u16> = exe_dir()
+        .as_os_str()
+        .encode_wide()
+        .chain(core::iter::once(0))
+        .collect();
+    let build = build_id();
+    let mut out = String::with_capacity(text.len() * 2);
+    if !text.contains(&format!("build: {build}")) {
+        out.push_str(&format!(
+            "WARNING: this kadr.exe is build {build}, which does not match this log. The names below are wrong.\n\n"
+        ));
+    }
+
+    // dbghelp is used from this one thread only
+    // between SymInitializeW and SymCleanup
+    // `search` is nul terminated and outlives the calls
+    // `buf` is a zeroed repr(C) followed by 512 spare wchars
+    // matching MaxNameLen and is passed as a pointer to the whole buffer
+    // so dbghelp may write the name past the struct. name is read back from that same buffer
+    // capped at 512 and `FileName` points into dbghelp's own nul terminated storage
+    unsafe {
+        let process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+        if SymInitializeW(process, search.as_ptr(), 1) == 0 {
+            return None;
+        }
+        let base = GetModuleHandleW(core::ptr::null()) as u64;
+        for line in text.lines() {
+            out.push_str(line);
+            if let Some(pos) = line.find("kadr.exe+0x") {
+                let hex: String = line[pos + 11..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect();
+
+                if let Ok(off) = u64::from_str_radix(&hex, 16) {
+                    let is_return = line.trim_start().starts_with('#');
+                    let addr = base + off - u64::from(is_return);
+                    let mut buf: SymBuf = core::mem::zeroed();
+                    buf.info.SizeOfStruct = core::mem::size_of::<SYMBOL_INFOW>() as u32;
+                    buf.info.MaxNameLen = 512;
+                    let mut disp: u64 = 0;
+                    if SymFromAddrW(
+                        process,
+                        addr,
+                        &mut disp,
+                        (&raw mut buf).cast::<SYMBOL_INFOW>(),
+                    ) != 0
+                    {
+                        let name_ptr = (&raw const buf)
+                            .cast::<u8>()
+                            .add(core::mem::offset_of!(SYMBOL_INFOW, Name))
+                            .cast::<u16>();
+                        let len = (buf.info.NameLen as usize).min(512);
+                        out.push_str("  ");
+                        out.push_str(&String::from_utf16_lossy(core::slice::from_raw_parts(
+                            name_ptr, len,
+                        )));
+                        let mut li: IMAGEHLP_LINEW64 = core::mem::zeroed();
+                        li.SizeOfStruct = core::mem::size_of::<IMAGEHLP_LINEW64>() as u32;
+                        let mut ldisp: u32 = 0;
+                        if SymGetLineFromAddrW64(process, addr, &mut ldisp, &mut li) != 0
+                            && !li.FileName.is_null()
+                        {
+                            let mut n = 0;
+                            while *li.FileName.add(n) != 0 {
+                                n += 1;
+                            }
+                            let file = String::from_utf16_lossy(core::slice::from_raw_parts(
+                                li.FileName,
+                                n,
+                            ));
+                            out.push_str(&format!(" ({file}:{})", li.LineNumber));
+                        }
+                    }
+                }
+            }
+            out.push('\n');
+        }
+        SymCleanup(process);
+    }
+    Some(out)
+}
+
+#[cfg(windows)]
+pub fn symbolize(log: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(log) else {
+        show_popup(
+            "kadr - symbolize",
+            &format!("Could not read {}", log.display()),
+        );
+        return;
+    };
+    let Some(out) = symbolize_text(&text) else {
+        show_popup("kadr - symbolize", "Could not initialise dbghelp.");
+        return;
+    };
+    let dest = log.with_extension("sym.log");
+    let msg = match std::fs::write(&dest, out) {
+        Ok(()) => format!("Wrote {}", dest.display()),
+        Err(e) => format!("Could not write {}: {e}", dest.display()),
+    };
+    show_popup("kadr - symbolize", &msg);
+}
+
+#[cfg(windows)]
+pub fn symbolize_pending() {
+    if !exe_dir().join("kadr.pdb").exists() {
+        return;
+    }
+    let exe_time = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let build = format!("build: {}", build_id());
+    let Ok(entries) = std::fs::read_dir(crate::config::kadr_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let report = name.starts_with("crash-") || name.starts_with("diag-");
+        if !report || !name.ends_with(".log") || name.ends_with(".sym.log") {
+            continue;
+        }
+        let newer = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= exe_time);
+        if !newer {
+            continue;
+        }
+        let path = entry.path();
+        let dest = path.with_extension("sym.log");
+        if dest.exists() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !text.contains(&build) {
+            continue;
+        }
+        if let Some(out) = symbolize_text(&text) {
+            let _ = std::fs::write(&dest, out);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn symbolize(_log: &std::path::Path) {}
+
+#[cfg(not(windows))]
+pub fn symbolize_pending() {}
+
+#[cfg(windows)]
+fn remember_main_thread() {
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+    // GetCurrentThreadId has no preconditions
+    MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+}
+
+pub fn enable_com_test() {
+    COM_TEST.store(true, Ordering::Relaxed);
+}
+
+#[cfg(windows)]
+fn com_apartment() -> (bool, i32, u32, u32) {
+    use winapi::um::combaseapi::CoGetApartmentType;
+    use winapi::um::objidlbase::{APTTYPE_MAINSTA, APTTYPE_STA};
+    let mut kind: u32 = 0;
+    let mut qualifier: u32 = 0;
+    // both out pointers are valid locals that live for the call
+    let hr = unsafe { CoGetApartmentType(&mut kind, &mut qualifier) };
+    let alive = hr == 0 && (kind == APTTYPE_STA || kind == APTTYPE_MAINSTA);
+    (alive, hr, kind, qualifier)
+}
+
+#[cfg(windows)]
+pub fn com_check(label: &'static str) {
+    use winapi::um::combaseapi::CoUninitialize;
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+    let state = COM_STATE.load(Ordering::Relaxed);
+    if state == 2 {
+        return;
+    }
+    // GetCurrentThreadId has no preconditions
+    if unsafe { GetCurrentThreadId() } != MAIN_THREAD.load(Ordering::Relaxed) {
+        return;
+    }
+    let (mut alive, mut hr, mut kind, mut qualifier) = com_apartment();
+    let mut label = label;
+    if state == 1
+        && alive
+        && COM_TEST.load(Ordering::Relaxed)
+        && COM_ALIVE_SINCE
+            .get()
+            .is_some_and(|t| t.elapsed().as_secs() >= 3)
+    {
+        COM_TEST.store(false, Ordering::Relaxed);
+        for _ in 0..32 {
+            // CoUninitialize has no memory preconditions
+            // this is the deliberate --com-test teardown and extra calls are no-ops
+            unsafe { CoUninitialize() };
+            (alive, hr, kind, qualifier) = com_apartment();
+            if !alive {
+                break;
+            }
+        }
+        label = "com-test";
+    }
+    match (state, alive) {
+        (0, true) => {
+            COM_STATE.store(1, Ordering::Relaxed);
+            let _ = COM_ALIVE_SINCE.set(std::time::Instant::now());
+            if let Ok(mut last) = COM_LAST_ALIVE.lock() {
+                *last = label;
+            }
+        }
+        (1, true) => {
+            if let Ok(mut last) = COM_LAST_ALIVE.lock() {
+                *last = label;
+            }
+        }
+        (1, false) => {
+            COM_STATE.store(2, Ordering::Relaxed);
+            let last = COM_LAST_ALIVE.lock().map(|l| *l).unwrap_or("?");
+            write_com_diag(last, label, hr, kind, qualifier);
+        }
+        _ => {}
+    }
+}
+
+#[cfg(not(windows))]
+pub fn com_check(_label: &'static str) {}
+
+#[cfg(windows)]
+fn write_com_diag(last: &str, label: &str, hr: i32, kind: u32, qualifier: u32) {
+    let mut full = String::from(
+        "kind          : COM was shut down on the UI thread (kadr kept running)\n",
+    );
+    full.push_str(&format!("alive at      : {last}\n"));
+    full.push_str(&format!("dead at       : {label}\n"));
+    full.push_str(&format!(
+        "apartment     : hr=0x{:08X} type={kind} qualifier={qualifier}\n",
+        hr as u32
+    ));
+    full.push('\n');
+    full.push_str(&capture_stack());
+    full.push('\n');
+    full.push_str(&dll_history());
+    full.push('\n');
+    full.push_str(&loaded_modules());
+    write_report(
+        "diag",
+        "diagnostic report",
+        env!("CARGO_PKG_VERSION"),
+        "COM was shut down on the UI thread. kadr kept running; this shows what did it.",
+        &full,
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -553,6 +1172,8 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
         full = format!("last activity : {}\n\n{full}", what.replace('\n', "  —  "));
     }
     full.push_str("\n\n");
+    full.push_str(&dll_history());
+    full.push('\n');
     full.push_str(&loaded_modules());
 
     let version = env!("CARGO_PKG_VERSION");
@@ -571,14 +1192,26 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
 }
 
 fn write_log(version: &str, headline: &str, full: &str) -> Option<std::path::PathBuf> {
+    write_report("crash", "crash report", version, headline, full)
+}
+
+fn write_report(
+    prefix: &str,
+    title: &str,
+    version: &str,
+    headline: &str,
+    full: &str,
+) -> Option<std::path::PathBuf> {
     let dir = crate::config::kadr_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("crash-{}.log", stamp_compact()));
+    let path = dir.join(format!("{prefix}-{}.log", stamp_compact()));
 
     let when = stamp_human();
+    let build = build_id();
     let rule = "-".repeat(64);
     let contents = format!(
-        "kadr {version} — crash report\n\
+        "kadr {version} — {title}\n\
+         build: {build}\n\
          when : {when}\n\
          {headline}\n\
          {rule}\n\n\
