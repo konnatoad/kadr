@@ -100,6 +100,8 @@ fn take_breadcrumbs() -> Option<String> {
 pub fn install() {
     #[cfg(windows)]
     pin_shell_modules();
+    #[cfg(windows)]
+    watch_dlls();
     snapshot_modules();
 
     // A leftover breadcrumb means the last run died in a way neither hook can
@@ -260,6 +262,10 @@ extern "C" fn on_process_exit() {
     }
     full.push('\n');
     full.push_str(&capture_stack());
+    full.push('\n');
+    full.push_str(&dll_history());
+    full.push('\n');
+    full.push_str(&loaded_modules());
     write_log(
         env!("CARGO_PKG_VERSION"),
         "kadr exited unexpectedly.",
@@ -388,6 +394,7 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         let stack = capture_stack();
 
         let modules = loaded_modules();
+        let history = dll_history();
         let crumb = take_breadcrumbs();
 
         let mut short = String::new();
@@ -432,6 +439,8 @@ unsafe extern "system" fn seh_filter(info: *mut winapi::um::winnt::EXCEPTION_POI
         }
         let _ = writeln!(full);
         let _ = write!(full, "{stack}");
+        let _ = writeln!(full);
+        let _ = write!(full, "{history}");
         let _ = writeln!(full);
         let _ = write!(full, "{modules}");
 
@@ -480,7 +489,7 @@ fn exception_name(code: u32) -> &'static str {
 /// `snapshot_modules` while the process is healthy. Crash-time code reads
 /// this instead of asking the loader directly — see `snapshot_modules` for
 /// why.
-static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String)>> =
+static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String, bool)>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Record the current module list somewhere crash-time code can read it
@@ -529,14 +538,20 @@ pub fn snapshot_modules() {
                     core::mem::size_of::<MODULEINFO>() as u32,
                 ) != 0
                 {
-                    list.push((info.lpBaseOfDll as usize, info.SizeOfImage as usize, name));
+                    list.push((
+                        info.lpBaseOfDll as usize,
+                        info.SizeOfImage as usize,
+                        name,
+                        false,
+                    ));
                 }
             }
         }
     }
 
     if let Ok(mut cache) = MODULE_CACHE.lock() {
-        *cache = list;
+        cache.retain(|m| m.3);
+        cache.extend(list);
     }
 }
 
@@ -550,13 +565,17 @@ fn module_for(addr: usize) -> Option<(String, usize)> {
     if addr == 0 {
         return None;
     }
-    let cache = MODULE_CACHE.lock().ok()?;
-    for (base, size, name) in cache.iter() {
+    let cache = MODULE_CACHE.try_lock().ok()?;
+    let mut unloaded = None;
+    for (base, size, name, gone) in cache.iter() {
         if addr >= *base && addr < base + size {
-            return Some((name.clone(), addr - base));
+            if !gone {
+                return Some((name.clone(), addr - base));
+            }
+            unloaded = Some((format!("{name}[unloaded]"), addr - base))
         }
     }
-    None
+    unloaded
 }
 
 /// Every loaded module's name, base address and size, from the snapshot —
@@ -567,10 +586,14 @@ fn loaded_modules() -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "---- loaded modules ----");
-    match MODULE_CACHE.lock() {
+    match MODULE_CACHE.try_lock() {
         Ok(cache) if !cache.is_empty() => {
-            for (base, size, name) in cache.iter() {
-                let _ = writeln!(out, "  {name:<28} base=0x{base:016X}  size=0x{size:X}");
+            for (base, size, name, gone) in cache.iter() {
+                let mark = if *gone { " [unloaded]" } else { "" };
+                let _ = writeln!(
+                    out,
+                    "  {name:<28} base=0x{base:016X}  size=0x{size:X}{mark}"
+                );
             }
         }
         _ => {
@@ -601,22 +624,203 @@ fn capture_stack() -> String {
     } as usize;
     let mut stack = String::new();
     let _ = writeln!(stack, "---- stack ({n} frames, return addresses) ----");
-    for (i, frame) in frames.iter().take(n).enumerate() {
-        let ret = *frame as usize;
-        match module_for(ret) {
-            Some((m, off)) => {
-                let _ = writeln!(stack, "   #{i:02} {m}+0x{off:X}");
-            }
-            None => {
-                let _ = writeln!(stack, "   #{i:02} 0x{ret:016X}");
-            }
-        }
-    }
+    stack.push_str(&frames_text(&frames[..n.min(frames.len())], "   "));
     stack
 }
 
 #[cfg(not(windows))]
 fn capture_stack() -> String {
+    String::new()
+}
+
+#[cfg(windows)]
+fn frames_text(frames: &[*mut core::ffi::c_void], indent: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for (i, frame) in frames.iter().enumerate() {
+        let retard = *frame as usize;
+        match module_for(retard) {
+            Some((m, off)) => {
+                let _ = writeln!(out, "{indent}#{i:02} {m}+0x{off:X}");
+            }
+            None => {
+                let _ = writeln!(out, "{indent}#{i:02} 0x{retard:016X}");
+            }
+        }
+    }
+    out
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct UniString {
+    length: u16,
+    _maximum_length: u16,
+    buffer: *const u16,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct DLLNotifData {
+    _flags: u32,
+    _full_dll_name: *const UniString,
+    base_dll_name: *const UniString,
+    dll_base: *mut core::ffi::c_void,
+    image_size: u32,
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct DLLEvent {
+    when: String,
+    thread: u32,
+    loaded: bool,
+    name: String,
+    base: usize,
+    stack: String,
+}
+
+#[cfg(windows)]
+static DLL_EVENTS: std::sync::Mutex<std::collections::VecDeque<DLLEvent>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+#[cfg(windows)]
+extern "system" fn dll_notif(
+    reason: u32,
+    data: *const DLLNotifData,
+    _context: *mut core::ffi::c_void,
+) {
+    use winapi::um::processthreadsapi::GetCurrentThreadId;
+
+    if data.is_null() || REPORTING.load(Ordering::SeqCst) {
+        return;
+    }
+    let loaded = reason == 1;
+    // data is null checked and the loadder keeps it valid
+    // length is halved for the u16 count
+    let (name, base, size, thread) = unsafe {
+        let data = &*data;
+        let name = match data.base_dll_name.as_ref() {
+            Some(s) if !s.buffer.is_null() => String::from_utf16_lossy(
+                core::slice::from_raw_parts(s.buffer, s.length as usize / 2),
+            ),
+            _ => String::from("?"),
+        };
+        (
+            name,
+            data.dll_base as usize,
+            data.image_size as usize,
+            GetCurrentThreadId(),
+        )
+    };
+    let stack = if loaded {
+        String::new()
+    } else {
+        let mut frames: [*mut core::ffi::c_void; 24] = [core::ptr::null_mut(); 24];
+        // frames is writeable buffer of passed length
+        // and the hash pointer may be null
+        let miguel = unsafe {
+            RtlCaptureStackBackTrace(
+                1,
+                frames.len() as u32,
+                frames.as_mut_ptr(),
+                core::ptr::null_mut(),
+            )
+        } as usize;
+        frames_text(&frames[..miguel.min(frames.len())], "      ")
+    };
+    if let Ok(mut cache) = MODULE_CACHE.lock() {
+        if loaded {
+            if !cache.iter().any(|m| m.0 == base && !m.3) {
+                cache.push((base, size, name.clone(), false));
+            }
+        } else if let Some(m) = cache.iter_mut().find(|m| m.0 == base && !m.3) {
+            m.3 = true;
+        }
+    }
+    let event = DLLEvent {
+        when: stamp_human(),
+        thread,
+        loaded,
+        name,
+        base,
+        stack,
+    };
+    if let Ok(mut events) = DLL_EVENTS.lock() {
+        if events.len() >= 48 {
+            match events.iter().position(|e| e.loaded) {
+                Some(i) => {
+                    events.remove(i);
+                }
+                None => {
+                    events.pop_front();
+                }
+            }
+        }
+        events.push_back(event);
+    }
+}
+
+#[cfg(windows)]
+fn watch_dlls() {
+    use winapi::shared::minwindef::FARPROC;
+    use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress};
+    type Callback = unsafe extern "system" fn(u32, *const DLLNotifData, *mut core::ffi::c_void);
+    type Register = unsafe extern "system" fn(
+        u32,
+        Callback,
+        *mut core::ffi::c_void,
+        *mut *mut core::ffi::c_void,
+    ) -> i32;
+    let ntdll: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+    // `ntdll` is nul terminated and outlives the calls
+    // ntdll is always loaded so the handle is never freed
+    // LdrRegisterDllNotification has exactly the `Register` signature
+    // and `dll_notif` matches the callback type it expects
+    unsafe {
+        let module = GetModuleHandleW(ntdll.as_ptr());
+        if module.is_null() {
+            return;
+        }
+        let proc = GetProcAddress(module, c"LdrRegisterDllNotification".as_ptr());
+        if proc.is_null() {
+            return;
+        }
+        let register = core::mem::transmute::<FARPROC, Register>(proc);
+        let mut cookie: *mut core::ffi::c_void = core::ptr::null_mut();
+        register(0, dll_notif, core::ptr::null_mut(), &mut cookie);
+    }
+}
+
+#[cfg(windows)]
+fn dll_history() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "---- DLL history ----");
+    match DLL_EVENTS.try_lock() {
+        Ok(events) if !events.is_empty() => {
+            for e in events.iter() {
+                let what = if e.loaded { "load  " } else { "UNLOAD" };
+                let _ = writeln!(
+                    out,
+                    "  {}  {what}  {:<28} base=0x{:016X}  thread {}",
+                    e.when, e.name, e.base, e.thread
+                );
+                out.push_str(&e.stack);
+            }
+        }
+        Ok(_) => {
+            let _ = writeln!(out, "  (none since startup)");
+        }
+        Err(_) => {
+            let _ = writeln!(out, "  (busy)");
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn dll_history() -> String {
     String::new()
 }
 
@@ -848,6 +1052,8 @@ fn report(headline: &str, short: &str, full: &str, exit_code: u32) -> ! {
         full = format!("last activity : {}\n\n{full}", what.replace('\n', "  —  "));
     }
     full.push_str("\n\n");
+    full.push_str(&dll_history());
+    full.push('\n');
     full.push_str(&loaded_modules());
 
     let version = env!("CARGO_PKG_VERSION");
