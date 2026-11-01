@@ -20,7 +20,22 @@ use anyhow::Result;
 use app::KadrApp;
 
 fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--symbolize") {
+        if let Some(log) = args.next() {
+            crash::symbolize(std::path::Path::new(&log));
+        }
+        return Ok(());
+    }
     crash::install();
+    if std::env::args().nth(1).as_deref() == Some("--crash-test") {
+        crash::test(std::env::args().nth(2).as_deref().unwrap_or(""));
+        return Ok(());
+    }
+    crash::symbolize_pending();
+    if std::env::args().nth(1).as_deref() == Some("--com-test") {
+        crash::enable_com_test();
+    }
 
     if std::env::var("KADR_LOG").is_ok() {
         env_logger::init();
@@ -31,7 +46,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let open_path = std::env::args().nth(1).map(std::path::PathBuf::from);
+    let open_path = std::env::args()
+        .nth(1)
+        .filter(|a| !a.starts_with("--"))
+        .map(std::path::PathBuf::from);
     let config = config::AppConfig::load();
 
     const WIN_W: f32 = 1280.0;

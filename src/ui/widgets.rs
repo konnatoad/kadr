@@ -1,4 +1,4 @@
-use egui::{Color32, RichText, Stroke, Ui};
+use egui::{RichText, Stroke, Ui};
 
 pub mod theme {
     use egui::Color32;
@@ -100,9 +100,8 @@ fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
         *on = !*on;
         response.mark_changed();
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, "")
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), *on, ""));
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_responsive(response.id, *on);
         let mut track_stroke = theme::BORDER;
@@ -120,7 +119,10 @@ fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
         );
         let inset = 3.0;
         let knob_size = rect.height() - inset * 2.0;
-        let knob_x = egui::lerp((rect.left() + inset)..=(rect.right() - inset - knob_size), t);
+        let knob_x = egui::lerp(
+            (rect.left() + inset)..=(rect.right() - inset - knob_size),
+            t,
+        );
         let knob_rect = egui::Rect::from_min_size(
             egui::pos2(knob_x, rect.top() + inset),
             egui::vec2(knob_size, knob_size),
@@ -158,7 +160,7 @@ pub fn sliding_tab_bar(ui: &mut Ui, labels: &[&str], active: usize) -> Option<us
         .collect();
     let active = active.min(rects.len().saturating_sub(1));
     let target = rects[active];
-    let base_id = ui.id().with("sliding_tab_bar");
+    let base_id = ui.scope_id().with("sliding_tab_bar");
     let anim_x = ui
         .ctx()
         .animate_value_with_time(base_id.with("x"), target.min.x, 0.2);

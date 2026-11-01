@@ -43,6 +43,7 @@ impl VideoContext {
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("video path is not valid UTF-8"))?;
 
+        crate::crash::com_check("before mpv create");
         unsafe {
             // ── Create and initialise mpv ─────────────────────────────────────
             let handle = mpv_create();
@@ -56,6 +57,7 @@ impl VideoContext {
             mpv_set_property_string(handle, c"terminal".as_ptr() as _, c"no".as_ptr() as _);
 
             let rc = mpv_initialize(handle);
+            crate::crash::com_check("after mpv initialize");
             if rc < 0 {
                 mpv_terminate_destroy(handle);
                 anyhow::bail!("mpv_initialize error {rc}");
@@ -81,6 +83,7 @@ impl VideoContext {
 
             let mut render_ctx: *mut MpvRenderCtx = null_mut();
             let rc = mpv_render_context_create(&mut render_ctx, handle, create_params.as_mut_ptr());
+            crate::crash::com_check("after mpv render context create");
             if rc < 0 {
                 mpv_terminate_destroy(handle);
                 anyhow::bail!("mpv_render_context_create error {rc}");
@@ -101,6 +104,7 @@ impl VideoContext {
             let path_cstr = CString::new(path_str)?;
             let cmd: [*const i8; 3] = [c"loadfile".as_ptr() as _, path_cstr.as_ptr(), null_mut()];
             mpv_command(handle, cmd.as_ptr());
+            crate::crash::com_check("after mpv loadfile");
 
             let ctx = Self {
                 handle,
@@ -174,7 +178,9 @@ impl VideoContext {
             },
         ];
 
+        crate::crash::com_check("before mpv render");
         let rc = unsafe { mpv_render_context_render(self.render_ctx, params.as_mut_ptr()) };
+        crate::crash::com_check("after mpv render");
         if rc < 0 {
             return None;
         }
@@ -294,6 +300,7 @@ impl VideoContext {
 
 impl Drop for VideoContext {
     fn drop(&mut self) {
+        crate::crash::com_check("before mpv destroy");
         unsafe {
             // Destroy render context first (stops the update callback),
             // then tear down mpv, then free the callback data.
@@ -301,5 +308,6 @@ impl Drop for VideoContext {
             mpv_terminate_destroy(self.handle);
             drop(Box::from_raw(self.cb_data));
         }
+        crate::crash::com_check("after mpv destroy");
     }
 }
