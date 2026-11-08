@@ -105,18 +105,49 @@ fn default_true() -> bool {
     true
 }
 
-/// `%APPDATA%\kadr` — the directory that holds `config.toml` and crash logs.
-/// Falls back to the current directory if `APPDATA` is not set.
-pub fn kadr_dir() -> PathBuf {
+/// The directory that holds `config.toml`: `%APPDATA%\kadr` on Windows,
+/// `$XDG_CONFIG_HOME/kadr` (usually `~/.config/kadr`) everywhere else.
+pub fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    return appdata_dir();
+    #[cfg(not(windows))]
+    return xdg_dir("XDG_CONFIG_HOME", ".config");
+}
+
+/// The directory for crash logs and breadcrumbs: the same `%APPDATA%\kadr` on
+/// Windows, `$XDG_STATE_HOME/kadr` (usually `~/.local/state/kadr`) elsewhere.
+pub fn state_dir() -> PathBuf {
+    #[cfg(windows)]
+    return appdata_dir();
+    #[cfg(not(windows))]
+    return xdg_dir("XDG_STATE_HOME", ".local/state");
+}
+
+/// `%APPDATA%\kadr`, or `kadr` in the current directory if `APPDATA` is not set.
+#[cfg(windows)]
+fn appdata_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     base.join("kadr")
 }
 
+/// `$<var>/kadr`, else `~/<fallback>/kadr`. The XDG spec says a relative path
+/// in the variable is invalid and must be ignored. With no `HOME` either, it's
+/// `kadr` in the current directory, like Windows without `APPDATA`.
+#[cfg(not(windows))]
+fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    let base = std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    base.join("kadr")
+}
+
 impl AppConfig {
     pub fn config_path() -> PathBuf {
-        kadr_dir().join("config.toml")
+        config_dir().join("config.toml")
     }
 
     pub fn load() -> Self {
@@ -134,7 +165,29 @@ impl AppConfig {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
+        write_private(&path, text.as_bytes())?;
         Ok(())
     }
+}
+
+/// The config holds the upload API key, so on unix only its owner may read it.
+/// (`%APPDATA%` on Windows is already private to the user.)
+#[cfg(unix)]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    // mode() only applies when the file is new; an older one may still be 0644
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)
 }

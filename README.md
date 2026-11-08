@@ -67,4 +67,6 @@ cargo build --release -p kadr
 
 ## Configuration
 
-Config is stored at `%APPDATA%\kadr\config.toml` and is written automatically on exit.
+Config is written automatically on exit, to `%APPDATA%\kadr\config.toml` on Windows
+and `~/.config/kadr/config.toml` (`$XDG_CONFIG_HOME`) on Linux. Crash logs go to
+`%APPDATA%\kadr\` on Windows and `~/.local/state/kadr/` (`$XDG_STATE_HOME`) on Linux.

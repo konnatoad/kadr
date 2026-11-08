@@ -67,7 +67,7 @@ pub struct Breadcrumb {
 impl Breadcrumb {
     pub fn new(what: impl AsRef<str>) -> Self {
         let id = CRUMB_SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = crate::config::kadr_dir();
+        let dir = crate::config::state_dir();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(format!("activity-{id}.txt"));
         let _ = std::fs::write(&path, format!("{}\n{}", stamp_human(), what.as_ref()));
@@ -83,7 +83,7 @@ impl Drop for Breadcrumb {
 
 /// Delete every breadcrumb file, returning the text of the most recent one.
 fn take_breadcrumbs() -> Option<String> {
-    let dir = crate::config::kadr_dir();
+    let dir = crate::config::state_dir();
     let mut newest: Option<(std::time::SystemTime, String)> = None;
     let entries = std::fs::read_dir(&dir).ok()?;
     for entry in entries.flatten() {
@@ -1005,7 +1005,7 @@ pub fn symbolize_pending() {
         .and_then(|m| m.modified())
         .unwrap_or(std::time::UNIX_EPOCH);
     let build = format!("build: {}", build_id());
-    let Ok(entries) = std::fs::read_dir(crate::config::kadr_dir()) else {
+    let Ok(entries) = std::fs::read_dir(crate::config::state_dir()) else {
         return;
     };
     for entry in entries.flatten() {
@@ -1202,7 +1202,7 @@ fn write_report(
     headline: &str,
     full: &str,
 ) -> Option<std::path::PathBuf> {
-    let dir = crate::config::kadr_dir();
+    let dir = crate::config::state_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{prefix}-{}.log", stamp_compact()));
 
