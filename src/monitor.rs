@@ -18,7 +18,6 @@ impl MonitorInfo {
     }
 }
 
-#[cfg(windows)]
 pub fn enumerate() -> Vec<MonitorInfo> {
     use std::mem;
     use winapi::shared::minwindef::{BOOL, LPARAM};
@@ -76,11 +75,6 @@ pub fn enumerate() -> Vec<MonitorInfo> {
         m.index = i;
     }
     infos
-}
-
-#[cfg(not(windows))]
-pub fn enumerate() -> Vec<MonitorInfo> {
-    vec![]
 }
 
 /// Returns the position to place a window of `win_w × win_h` centered on the preferred monitor.

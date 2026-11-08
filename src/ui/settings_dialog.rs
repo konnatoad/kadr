@@ -32,6 +32,7 @@ pub struct SettingsDialog {
 
     pub open_lua_editor: bool,
 
+    #[cfg(windows)]
     pub monitors: Vec<crate::monitor::MonitorInfo>,
 }
 
@@ -66,6 +67,7 @@ impl Default for SettingsDialog {
             lua_code: String::new(),
             lua_error: None,
             open_lua_editor: false,
+            #[cfg(windows)]
             monitors: Vec::new(),
         }
     }
@@ -174,50 +176,9 @@ impl SettingsDialog {
     }
 
     fn show_general(&mut self, ui: &mut Ui) {
-        if self.monitors.is_empty() {
-            self.monitors = crate::monitor::enumerate();
-        }
-
         widgets::section_label(ui, "Display");
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Open on:");
-            ui.add_space(8.0);
-            let current_label = if self.preferred_monitor == 0 {
-                "Auto (OS default)".to_owned()
-            } else {
-                self.monitors
-                    .get(self.preferred_monitor - 1)
-                    .map(|m| m.label())
-                    .unwrap_or_else(|| format!("Monitor {}", self.preferred_monitor))
-            };
-            egui::ComboBox::from_id_salt("settings_monitor")
-                .selected_text(current_label)
-                .width(ui.available_width().min(340.0))
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(self.preferred_monitor == 0, "Auto (OS default)")
-                        .clicked()
-                    {
-                        self.preferred_monitor = 0;
-                    }
-                    for m in &self.monitors {
-                        let idx = m.index + 1;
-                        if ui
-                            .selectable_label(self.preferred_monitor == idx, m.label())
-                            .clicked()
-                        {
-                            self.preferred_monitor = idx;
-                        }
-                    }
-                });
-        });
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("Takes effect on next launch.")
-                .color(theme::TEXT_MUTED)
-                .size(11.0),
-        );
+        self.show_monitor_choice(ui);
 
         ui.add_space(12.0);
         widgets::section_label(ui, "View");
@@ -268,6 +229,68 @@ impl SettingsDialog {
             RichText::new("When off, kadr starts with an empty window every time.")
                 .color(theme::TEXT_MUTED)
                 .size(11.5),
+        );
+    }
+
+    /// Windows lets kadr move its own window onto the chosen monitor.
+    #[cfg(windows)]
+    fn show_monitor_choice(&mut self, ui: &mut Ui) {
+        if self.monitors.is_empty() {
+            self.monitors = crate::monitor::enumerate();
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Open on:");
+            ui.add_space(8.0);
+            let current_label = if self.preferred_monitor == 0 {
+                "Auto (OS default)".to_owned()
+            } else {
+                self.monitors
+                    .get(self.preferred_monitor - 1)
+                    .map(|m| m.label())
+                    .unwrap_or_else(|| format!("Monitor {}", self.preferred_monitor))
+            };
+            egui::ComboBox::from_id_salt("settings_monitor")
+                .selected_text(current_label)
+                .width(ui.available_width().min(340.0))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(self.preferred_monitor == 0, "Auto (OS default)")
+                        .clicked()
+                    {
+                        self.preferred_monitor = 0;
+                    }
+                    for m in &self.monitors {
+                        let idx = m.index + 1;
+                        if ui
+                            .selectable_label(self.preferred_monitor == idx, m.label())
+                            .clicked()
+                        {
+                            self.preferred_monitor = idx;
+                        }
+                    }
+                });
+        });
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("Takes effect on next launch.")
+                .color(theme::TEXT_MUTED)
+                .size(11.0),
+        );
+    }
+
+    /// Wayland doesn't let an app place its own window, so on Linux the window
+    /// manager decides; the note says how to make it pick one monitor.
+    #[cfg(not(windows))]
+    fn show_monitor_choice(&mut self, ui: &mut Ui) {
+        ui.label("Open on: wherever your window manager puts it");
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(
+                "To keep kadr on one monitor, add a window rule for the window class \"kadr\".",
+            )
+            .color(theme::TEXT_MUTED)
+            .size(11.0),
         );
     }
 

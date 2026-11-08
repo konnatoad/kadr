@@ -10,6 +10,8 @@ mod keybinds;
 #[cfg(feature = "libraw-native")]
 mod libraw_native;
 mod media;
+// Windows only: Wayland doesn't let an app place its own window
+#[cfg(windows)]
 mod monitor;
 mod slideshow;
 mod ui;
@@ -55,16 +57,18 @@ fn main() -> Result<()> {
     const WIN_W: f32 = 1280.0;
     const WIN_H: f32 = 800.0;
 
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_title("kadr")
         .with_min_inner_size([640.0, 480.0])
         .with_inner_size([WIN_W, WIN_H])
         .with_drag_and_drop(true)
         .with_icon(std::sync::Arc::new(icon::egui_icon()));
 
-    if let Some(pos) = monitor::initial_position(config.preferred_monitor, WIN_W, WIN_H) {
-        viewport = viewport.with_position(pos);
-    }
+    #[cfg(windows)]
+    let viewport = match monitor::initial_position(config.preferred_monitor, WIN_W, WIN_H) {
+        Some(pos) => viewport.with_position(pos),
+        None => viewport,
+    };
 
     let native_options = eframe::NativeOptions {
         viewport,
