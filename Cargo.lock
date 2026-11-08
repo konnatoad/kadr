@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "kadr"
-version = "1.6.1-beta.3"
+version = "1.7.0-beta.1"
 dependencies = [
  "anyhow",
  "eframe",

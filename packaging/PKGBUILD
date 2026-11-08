@@ -4,7 +4,7 @@
 #   makepkg -si
 pkgname=kadr-git
 _pkgname=kadr
-pkgver=1.6.1_beta.3.r0.g0000000
+pkgver=1.7.0_beta.1.r0.g0000000
 pkgrel=1
 pkgdesc='A fast, minimal image and video viewer'
 arch=('x86_64' 'aarch64')
@@ -27,7 +27,7 @@ pkgver() {
   cd "$_pkgname"
   local version
   version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
-  # pkgver can't hold a dash: 1.6.1-beta.3 becomes 1.6.1_beta.3
+  # pkgver can't hold a dash: 1.7.0-beta.1 becomes 1.7.0_beta.1
   printf '%s.r%s.g%s' "${version//-/_}" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
