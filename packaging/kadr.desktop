@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=kadr
+GenericName=Image Viewer
+Comment=A fast, minimal image and video viewer
+Exec=kadr %f
+Icon=kadr
+Terminal=false
+StartupWMClass=kadr
+Categories=Graphics;Viewer;
+Keywords=image;photo;picture;raw;video;viewer;slideshow;
+MimeType=image/jpeg;image/png;image/apng;image/gif;image/webp;image/bmp;image/tiff;image/avif;image/heif;image/vnd.microsoft.icon;image/x-portable-anymap;image/x-portable-bitmap;image/x-portable-graymap;image/x-portable-pixmap;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-nikon-nrw;image/x-sony-arw;image/x-sony-srf;image/x-sony-sr2;image/x-adobe-dng;image/x-olympus-orf;image/x-panasonic-rw2;image/x-fuji-raf;image/x-pentax-pef;image/x-samsung-srw;image/x-sigma-x3f;image/x-minolta-mrw;image/x-hasselblad-3fr;image/x-kde-raw;image/x-hasselblad-fff;image/x-phaseone-iiq;image/x-kodak-kdc;image/x-kodak-dcr;image/x-panasonic-rw;image/x-mamiya-mef;image/x-leaf-mos;video/mp4;video/matroska;video/vnd.avi;video/quicktime;video/x-ms-wmv;video/webm;video/x-flv;video/mpeg;video/3gpp;video/mp2t;

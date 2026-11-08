@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- the same "Ka" as src/icon.rs and build.rs draw, at 256 px -->
+  <rect x="1.5" y="1.5" width="253" height="253" rx="35.84" fill="#0c0c12"/>
+  <g fill="none" stroke="#639bff" stroke-width="31.744">
+    <path stroke-linecap="round" d="M40.96 37.12V218.88M40.96 128L97.28 37.12M40.96 128L97.28 218.88M226.048 37.12V218.88"/>
+    <path d="M224.423 139.532A41.728 41.728 0 1 1 224.423 116.468"/>
+  </g>
+</svg>

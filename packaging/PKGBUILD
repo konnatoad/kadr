@@ -1,0 +1,60 @@
+# Maintainer: konnatoad <konna@konserve.xyz>
+#
+# Builds kadr from the latest commit on main. From this folder:
+#   makepkg -si
+pkgname=kadr-git
+_pkgname=kadr
+pkgver=1.6.1_beta.3.r0.g0000000
+pkgrel=1
+pkgdesc='A fast, minimal image and video viewer'
+arch=('x86_64' 'aarch64')
+url='https://github.com/konnatoad/kadr'
+# the repository doesn't name a license yet
+license=('LicenseRef-unknown')
+depends=('mpv' 'libheif' 'libraw' 'zenity' 'gcc-libs' 'glibc' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'nasm' 'pkgconf')
+optdepends=('binutils: function names in crash logs (with kadr-git-debug or a local build)')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+# makepkg's LTO flags make the C parts (mozjpeg, lua) into objects that only
+# gcc's LTO plugin can link, and cargo links without it; kadr's release
+# profile already does LTO on the Rust side
+options=('!lto')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  local version
+  version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+  # pkgver can't hold a dash: 1.6.1-beta.3 becomes 1.6.1_beta.3
+  printf '%s.r%s.g%s' "${version//-/_}" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+  cd "$_pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # keep the symbols through the link: makepkg's strip then moves them into
+  # kadr-git-debug, and crash logs get function names from there
+  export CARGO_PROFILE_RELEASE_STRIP=none
+  export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+  # source paths in panic messages and line tables point where the -debug
+  # package puts the sources, not into this build folder
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=/usr/src/debug/$pkgbase"
+  cargo build --frozen --release --features libheif,libraw-native
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 target/release/kadr "$pkgdir/usr/bin/kadr"
+  install -Dm644 packaging/kadr.desktop "$pkgdir/usr/share/applications/kadr.desktop"
+  install -Dm644 packaging/kadr.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/kadr.svg"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+}

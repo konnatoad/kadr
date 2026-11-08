@@ -6,16 +6,17 @@ Fast, minimal image and video viewer built with Rust and egui.
 
 - Images: JPEG, PNG, GIF, WebP, BMP, TIFF, AVIF, HEIC, ICO and more
 - RAW: CR2, CR3, NEF, ARW, DNG, ORF, RAF and other common RAW formats
-- Video: MP4, MKV, AVI, MOV, WebM and more (in-app playback via libmpv, installed alongside kadr)
+- Video: MP4, MKV, AVI, MOV, WebM and more (in-app playback via libmpv: the installer bundles it on Windows, the system's mpv on Linux)
 - Thumbnail strip with lazy loading
 - Folder and file scanning with optional subfolder traversal
 - Sort by name, date, or size
 - Zoom, pan, rotate, flip — all non-destructive except explicit save
 - Slideshow with configurable interval, random order, and Lua scripting
 - Combine folders utility
-- Right-click context menu integration (optional, set via installer)
+- Right-click context menu integration (Windows, optional, set via installer)
 - Configurable keyboard shortcuts
-- Multi-monitor support — choose which monitor to open on
+- Multi-monitor support — choose which monitor to open on (Windows; on Linux, see [below](#opening-on-a-chosen-monitor))
+- Crash reports — if kadr crashes, it says why in a popup and keeps a log (see [Configuration](#configuration))
 - Drag-and-drop to open files and folders
 
 ## Default keyboard shortcuts
@@ -56,6 +57,8 @@ All shortcuts are re-bindable from Settings (`Ctrl+,`).
 
 ## Building
 
+### Windows
+
 Prerequisites: Rust 1.85+ (2024 edition), Windows SDK.
 
 ```powershell
@@ -64,6 +67,40 @@ cargo build --release -p kadr
 
 # The binary is at target/release/kadr.exe
 ```
+
+### Linux
+
+Prerequisites: Rust 1.85+ (2024 edition), a C compiler, pkg-config, and the
+development files of libmpv, libheif and libraw. `nasm` is optional: with it,
+JPEG decoding uses SIMD. `zenity` shows the crash popup.
+
+```sh
+# Arch
+sudo pacman -S --needed base-devel mpv libheif libraw nasm zenity
+# Debian / Ubuntu
+sudo apt install build-essential pkg-config libmpv-dev libheif-dev libraw-dev nasm zenity
+
+cargo build --release -p kadr --features libheif,libraw-native
+
+# The binary is at target/release/kadr
+```
+
+On Arch, `packaging/PKGBUILD` builds and installs kadr with its menu entry and icon:
+
+```sh
+cd packaging && makepkg -si
+```
+
+Elsewhere, copy `target/release/kadr` to `~/.local/bin/`, `packaging/kadr.desktop`
+to `~/.local/share/applications/` and `packaging/kadr.svg` to
+`~/.local/share/icons/hicolor/scalable/apps/`.
+
+#### Opening on a chosen monitor
+
+Wayland doesn't let an app place its own window, so on Linux the window manager
+decides where kadr opens. To keep it on one monitor, add a window rule for the
+window class `kadr`: in Hyprland a `monitor` window rule, in Sway
+`for_window [app_id="kadr"] move to output DP-1`.
 
 ## Configuration
 
