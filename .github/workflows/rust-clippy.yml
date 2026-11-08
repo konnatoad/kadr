@@ -2,9 +2,9 @@ name: rust-clippy analyze
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main", "dev" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main", "dev" ]
   schedule:
     - cron: '34 21 * * 6'
 
@@ -20,6 +20,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # --all-features checks the libheif and libraw bindings, whose build
+      # script looks for these through pkg-config
+      - name: Install native libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config nasm libmpv-dev libheif-dev libraw-dev
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -43,3 +50,37 @@ jobs:
         with:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
+
+  # the same check on both platforms kadr ships for; unlike the analysis above,
+  # a compile error here fails the run
+  check:
+    name: Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install native libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config nasm libmpv-dev libheif-dev libraw-dev
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+          # the action denies warnings by default; existing lint warnings
+          # shouldn't fail this job, only errors
+          rustflags: ""
+
+      - name: Run clippy
+        run: cargo clippy --locked --all-features
