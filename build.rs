@@ -29,6 +29,15 @@ fn main() {
     link_search("MPV_LIB_DIR", windows.then(mpv_dev_dir), "mpv");
     // The actual #[link(name = "mpv")] attribute lives in video/mpv_ffi.rs.
 
+    // Linux: keep the C libraries kadr builds in (its own Lua 5.4 from mlua)
+    // private. libmpv calls lua_* functions meant for its LuaJIT, and when the
+    // executable exports a lua_* of its own, the dynamic linker hands mpv that
+    // one instead: mpv's ytdl_hook script then crashed as every video opened.
+    // Windows DLLs only ever see their own imports, so this can't happen there.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-bins=-Wl,--exclude-libs,ALL");
+    }
+
     if windows {
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let ico_path = format!("{out_dir}/kadr.ico");
