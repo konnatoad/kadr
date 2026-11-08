@@ -57,7 +57,10 @@ winapi = { version = "0.3", features = [
 ] }
 
 [build-dependencies]
+# build.rs runs on the machine that builds, so both stay plain build-dependencies:
+# winres is only called for Windows targets, pkg-config only for the others.
 winres = "0.1"
+pkg-config = "0.3"
 
 [profile.dev]
 opt-level = 1

@@ -1,39 +1,35 @@
+use std::path::PathBuf;
+
 fn main() {
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let vcpkg = || PathBuf::from("C:/vcpkg/installed/x64-windows/lib");
+
     // ── libheif linking ───────────────────────────────────────────────────────
     if std::env::var("CARGO_FEATURE_LIBHEIF").is_ok() {
-        let default_dir = std::path::PathBuf::from("C:/vcpkg/installed/x64-windows/lib");
-        let lib_dir = std::env::var("HEIF_LIB_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or(default_dir);
-        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        link_search("HEIF_LIB_DIR", windows.then(vcpkg), "libheif");
     }
 
     // ── libraw_r linking ──────────────────────────────────────────────────────
     if std::env::var("CARGO_FEATURE_LIBRAW_NATIVE").is_ok() {
-        let default_dir = std::path::PathBuf::from("C:/vcpkg/installed/x64-windows/lib");
-        let lib_dir = std::env::var("LIBRAW_LIB_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or(default_dir);
-        println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        link_search("LIBRAW_LIB_DIR", windows.then(vcpkg), "libraw_r");
     }
 
     // ── libmpv linking ────────────────────────────────────────────────────────
-    // At build time: libmpv.dll.a (MinGW import library) must be on the search path.
-    // The dev files live at ../target/release/ relative to this crate; that path is
-    // added automatically below. Override with MPV_LIB_DIR if needed.
-    //
-    // At runtime: libmpv-2.dll must be next to kadr.exe (the installer bundles it).
-    let default_dir = {
+    // Windows, at build time: libmpv.dll.a (MinGW import library) must be on the
+    // search path. The dev files live at ../target/release/ relative to this
+    // crate; that path is added automatically below.
+    // Windows, at runtime: libmpv-2.dll must be next to kadr.exe (the installer
+    // bundles it).
+    // Linux: the system's libmpv (Arch: `mpv`, Debian/Ubuntu: `libmpv-dev`).
+    // Override with MPV_LIB_DIR on either.
+    let mpv_dev_dir = || {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-        std::path::PathBuf::from(&manifest).join("..").join("target").join("release")
+        PathBuf::from(&manifest).join("..").join("target").join("release")
     };
-    let lib_dir = std::env::var("MPV_LIB_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or(default_dir);
-    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    link_search("MPV_LIB_DIR", windows.then(mpv_dev_dir), "mpv");
     // The actual #[link(name = "mpv")] attribute lives in video/mpv_ffi.rs.
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    if windows {
         let out_dir = std::env::var("OUT_DIR").unwrap();
         let ico_path = format!("{out_dir}/kadr.ico");
         generate_ico(&ico_path);
@@ -46,6 +42,34 @@ fn main() {
         res.set("FileVersion", &version);
         res.set("ProductVersion", &version);
         res.compile().expect("winres failed — is a C compiler (MSVC or MinGW) available?");
+    }
+}
+
+/// Tell the linker where a native library lives: the folder in `env_var` when
+/// it's set, otherwise the Windows default, otherwise (Linux) wherever
+/// pkg-config says the system keeps `pkg`. The `#[link]` attributes in the
+/// ffi modules name the library itself, so only search paths are added here.
+fn link_search(env_var: &str, windows_default: Option<PathBuf>, pkg: &str) {
+    if let Some(dir) = std::env::var_os(env_var).map(PathBuf::from).or(windows_default) {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        return;
+    }
+    match pkg_config::Config::new().cargo_metadata(false).probe(pkg) {
+        Ok(lib) => {
+            for dir in lib.link_paths {
+                println!("cargo:rustc-link-search=native={}", dir.display());
+            }
+        }
+        // the linker's default paths may still have it, so this isn't fatal
+        Err(e) => {
+            // a cargo warning ends at the first line break, and pkg-config's errors have several
+            let why = e.to_string();
+            let why = why.lines().find(|line| !line.trim().is_empty()).unwrap_or("").trim();
+            println!(
+                "cargo:warning=pkg-config can't find {pkg} ({why}); install its development \
+                 files, or point {env_var} at the folder that has it"
+            );
+        }
     }
 }
 
