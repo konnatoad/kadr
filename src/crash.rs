@@ -12,7 +12,7 @@
 //!   * `std::panic::set_hook`         — Rust panics, on any thread
 //!   * `SetUnhandledExceptionFilter`  — native / OS structured exceptions
 //!
-//! The reporter writes a full log next to `config.toml` (fault address,
+//! The reporter writes a full log to kadr's state folder (fault address,
 //! faulting module, and every stack frame as `module+0xoffset` so a stripped
 //! release binary can still be symbolised offline), shows a modal message box
 //! with the short reason, then hard-exits the process.
@@ -22,8 +22,21 @@
 //! stderr that a windowed build doesn't have, then `abort()`), or a C library
 //! calling `exit()`. For those, [`Breadcrumb`] leaves a note on disk saying
 //! what kadr was doing; if it's still there next launch, `install()` shows it.
+//!
+//! On Linux the native-crash half is a signal handler instead, in
+//! [`linux`]: it writes the same facts without allocating, then re-runs kadr
+//! to write the log and show the popup. Panics, breadcrumbs and the `exit()`
+//! hook are the same code on both.
+#[cfg(not(windows))]
+mod linux;
+
+#[cfg(not(windows))]
+pub use linux::report_pending;
+
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU8, AtomicU32};
 
 /// Flipped to `true` the moment we start reporting a crash, so the
 /// panic-hook → `abort()` → structured-exception cascade only ever produces
@@ -37,14 +50,18 @@ static CRUMB_SEQ: AtomicU64 = AtomicU64::new(0);
 /// normal close apart from an unexpected `exit()` call.
 static NORMAL_EXIT: AtomicBool = AtomicBool::new(false);
 
+#[cfg(windows)]
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(windows)]
 static COM_STATE: AtomicU8 = AtomicU8::new(0);
 
 static COM_TEST: AtomicBool = AtomicBool::new(false);
 
+#[cfg(windows)]
 static COM_LAST_ALIVE: std::sync::Mutex<&'static str> = std::sync::Mutex::new("");
 
+#[cfg(windows)]
 static COM_ALIVE_SINCE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +133,11 @@ pub fn install() {
     watch_dlls();
     snapshot_modules();
 
+    // A Linux crash whose report didn't get made last time (see `linux`).
+    // It takes the breadcrumbs with it, so they don't get a popup of their own.
+    #[cfg(not(windows))]
+    linux::report_leftover();
+
     // A leftover breadcrumb means the last run died in a way neither hook can
     // catch. Report it before arming anything for this run.
     if let Some(activity) = take_breadcrumbs() {
@@ -151,6 +173,8 @@ pub fn install() {
 
     #[cfg(windows)]
     install_seh();
+    #[cfg(not(windows))]
+    linux::install();
 }
 
 #[cfg(windows)]
@@ -212,7 +236,9 @@ fn raise_test_exception() {
 }
 
 #[cfg(not(windows))]
-fn raise_test_exception() {}
+fn raise_test_exception() {
+    linux::raise_test_fault();
+}
 
 /// Give the current thread the same stack-overflow headroom the main thread
 /// gets, so `seh_filter` can still run if this thread overflows its stack.
@@ -227,18 +253,19 @@ pub fn guard_thread_stack() {
 }
 
 #[cfg(not(windows))]
-pub fn guard_thread_stack() {}
+pub use linux::guard_thread_stack;
 
 /// Re-arm kadr's own exception filter. Some GPU drivers install their own
 /// `SetUnhandledExceptionFilter` during OpenGL context creation, silently
 /// replacing ours — call this once the GL context exists to win it back.
+/// (On Linux it re-installs the signal handlers, for the same reason.)
 #[cfg(windows)]
 pub fn reassert() {
     install_seh();
 }
 
 #[cfg(not(windows))]
-pub fn reassert() {}
+pub use linux::reassert;
 
 /// Call when eframe's shutdown begins, so `on_process_exit` below knows the
 /// close was expected instead of logging a normal quit as a crash.
@@ -263,9 +290,11 @@ extern "C" fn on_process_exit() {
         return;
     }
     let crumb = take_breadcrumbs();
-    let mut full = String::from(
-        "kind          : process exited via exit(), not a panic or Windows exception\n",
-    );
+    #[cfg(windows)]
+    let kind = "kind          : process exited via exit(), not a panic or Windows exception\n";
+    #[cfg(not(windows))]
+    let kind = "kind          : process exited via exit(), not a panic or crash signal\n";
+    let mut full = String::from(kind);
     if let Some(what) = &crumb {
         full.push_str(&format!(
             "last activity : {}\n",
@@ -501,6 +530,7 @@ fn exception_name(code: u32) -> &'static str {
 /// `snapshot_modules` while the process is healthy. Crash-time code reads
 /// this instead of asking the loader directly — see `snapshot_modules` for
 /// why.
+#[cfg(windows)]
 static MODULE_CACHE: std::sync::Mutex<Vec<(usize, usize, String, bool)>> =
     std::sync::Mutex::new(Vec::new());
 
@@ -567,6 +597,8 @@ pub fn snapshot_modules() {
     }
 }
 
+/// Linux reads the live library list at crash time (see `linux`), so there's
+/// nothing to snapshot.
 #[cfg(not(windows))]
 pub fn snapshot_modules() {}
 
@@ -616,9 +648,7 @@ fn loaded_modules() -> String {
 }
 
 #[cfg(not(windows))]
-fn loaded_modules() -> String {
-    String::new()
-}
+use linux::loaded_modules;
 
 #[cfg(windows)]
 fn capture_stack() -> String {
@@ -641,9 +671,7 @@ fn capture_stack() -> String {
 }
 
 #[cfg(not(windows))]
-fn capture_stack() -> String {
-    String::new()
-}
+use linux::capture_stack;
 
 #[cfg(windows)]
 fn frames_text(frames: &[*mut core::ffi::c_void], indent: &str) -> String {
@@ -831,6 +859,7 @@ fn dll_history() -> String {
     out
 }
 
+/// Linux has no load/unload notifications to keep a history from.
 #[cfg(not(windows))]
 fn dll_history() -> String {
     String::new()
@@ -863,7 +892,7 @@ fn build_id() -> String {
 
 #[cfg(not(windows))]
 fn build_id() -> String {
-    String::from("unknown")
+    linux::build_id().to_string()
 }
 
 #[cfg(windows)]
@@ -974,7 +1003,22 @@ fn symbolize_text(text: &str) -> Option<String> {
     Some(out)
 }
 
+/// Whether there are symbols to name kadr's frames with: `kadr.pdb` next to the exe.
 #[cfg(windows)]
+fn has_symbols() -> bool {
+    exe_dir().join("kadr.pdb").exists()
+}
+
+#[cfg(windows)]
+const NO_NAMES: &str = "Could not initialise dbghelp.";
+
+#[cfg(not(windows))]
+use linux::{has_symbols, symbolize_text};
+
+#[cfg(not(windows))]
+const NO_NAMES: &str = "Found no function names: this kadr has no symbols (a stripped build), \
+     or addr2line (binutils) isn't installed.";
+
 pub fn symbolize(log: &std::path::Path) {
     let Ok(text) = std::fs::read_to_string(log) else {
         show_popup(
@@ -984,7 +1028,7 @@ pub fn symbolize(log: &std::path::Path) {
         return;
     };
     let Some(out) = symbolize_text(&text) else {
-        show_popup("kadr - symbolize", "Could not initialise dbghelp.");
+        show_popup("kadr - symbolize", NO_NAMES);
         return;
     };
     let dest = log.with_extension("sym.log");
@@ -995,9 +1039,8 @@ pub fn symbolize(log: &std::path::Path) {
     show_popup("kadr - symbolize", &msg);
 }
 
-#[cfg(windows)]
 pub fn symbolize_pending() {
-    if !exe_dir().join("kadr.pdb").exists() {
+    if !has_symbols() {
         return;
     }
     let exe_time = std::env::current_exe()
@@ -1038,12 +1081,6 @@ pub fn symbolize_pending() {
         }
     }
 }
-
-#[cfg(not(windows))]
-pub fn symbolize(_log: &std::path::Path) {}
-
-#[cfg(not(windows))]
-pub fn symbolize_pending() {}
 
 #[cfg(windows)]
 fn remember_main_thread() {
@@ -1202,12 +1239,25 @@ fn write_report(
     headline: &str,
     full: &str,
 ) -> Option<std::path::PathBuf> {
+    write_report_at(prefix, title, version, &build_id(), now_parts(), headline, full)
+}
+
+/// [`write_report`] for a crash that happened earlier, in a kadr that may have
+/// been a different build (the Linux reporter, see `linux`).
+fn write_report_at(
+    prefix: &str,
+    title: &str,
+    version: &str,
+    build: &str,
+    when: TimeParts,
+    headline: &str,
+    full: &str,
+) -> Option<std::path::PathBuf> {
     let dir = crate::config::state_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("{prefix}-{}.log", stamp_compact()));
+    let path = dir.join(format!("{prefix}-{}.log", stamp_compact_of(when)));
 
-    let when = stamp_human();
-    let build = build_id();
+    let when = stamp_human_of(when);
     let rule = "-".repeat(64);
     let contents = format!(
         "kadr {version} — {title}\n\
@@ -1248,7 +1298,7 @@ fn show_popup(title: &str, text: &str) {
     }
 
     #[cfg(not(windows))]
-    eprintln!("[{title}]\n{text}");
+    linux::show_popup(title, text);
 }
 
 fn hard_exit(code: u32) -> ! {
@@ -1262,8 +1312,11 @@ fn hard_exit(code: u32) -> ! {
 
 // ── timestamps (no chrono dependency) ────────────────────────────────────────
 
+/// Local `(year, month, day, hour, minute, second)`.
+type TimeParts = (u16, u16, u16, u16, u16, u16);
+
 #[cfg(windows)]
-fn now_parts() -> (u16, u16, u16, u16, u16, u16) {
+fn now_parts() -> TimeParts {
     unsafe {
         use winapi::um::minwinbase::SYSTEMTIME;
         use winapi::um::sysinfoapi::GetLocalTime;
@@ -1275,28 +1328,17 @@ fn now_parts() -> (u16, u16, u16, u16, u16, u16) {
     }
 }
 
-#[cfg(windows)]
-fn stamp_compact() -> String {
-    let (y, mo, d, h, mi, s) = now_parts();
+#[cfg(not(windows))]
+use linux::now_parts;
+
+fn stamp_compact_of((y, mo, d, h, mi, s): TimeParts) -> String {
     format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
 }
 
-#[cfg(windows)]
-fn stamp_human() -> String {
-    let (y, mo, d, h, mi, s) = now_parts();
+fn stamp_human_of((y, mo, d, h, mi, s): TimeParts) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
-#[cfg(not(windows))]
-fn stamp_compact() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        .to_string()
-}
-
-#[cfg(not(windows))]
 fn stamp_human() -> String {
-    stamp_compact()
+    stamp_human_of(now_parts())
 }

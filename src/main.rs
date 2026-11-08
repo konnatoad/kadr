@@ -21,13 +21,27 @@ mod video;
 use anyhow::Result;
 use app::KadrApp;
 
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!("kadr is built for Windows and Linux");
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--symbolize") {
-        if let Some(log) = args.next() {
-            crash::symbolize(std::path::Path::new(&log));
+    match args.next().as_deref() {
+        Some("--symbolize") => {
+            if let Some(log) = args.next() {
+                crash::symbolize(std::path::Path::new(&log));
+            }
+            return Ok(());
         }
-        return Ok(());
+        // what kadr's Linux crash handler turns the crashed process into
+        #[cfg(not(windows))]
+        Some("--crash-report") => {
+            if let Some(pending) = args.next() {
+                std::process::exit(crash::report_pending(std::path::Path::new(&pending)));
+            }
+            return Ok(());
+        }
+        _ => {}
     }
     crash::install();
     if std::env::args().nth(1).as_deref() == Some("--crash-test") {
