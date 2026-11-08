@@ -46,6 +46,8 @@ fn main() -> Result<()> {
     crash::install();
     if std::env::args().nth(1).as_deref() == Some("--crash-test") {
         crash::test(std::env::args().nth(2).as_deref().unwrap_or(""));
+        // only the usage message gets here, and that's not a crash
+        crash::mark_normal_exit();
         return Ok(());
     }
     crash::symbolize_pending();
@@ -59,6 +61,7 @@ fn main() -> Result<()> {
 
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("kadr {}", env!("CARGO_PKG_VERSION"));
+        crash::mark_normal_exit();
         return Ok(());
     }
 
