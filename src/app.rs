@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -41,7 +42,18 @@ const THUMB_CACHE_LIMIT: usize = 200;
 const THUMB_PANEL_MARGIN_TOP: f32 = 8.0;
 const THUMB_PANEL_MARGIN_BOTTOM: f32 = 10.0;
 
+#[derive(Clone, Copy)]
+enum PickKind {
+    File,
+    CombineSources,
+    CombineDest,
+    AddFolders,
+}
+
 pub struct KadrApp {
+    // file dialog running off the UI thread, so the window keeps answering
+    // the compositor's ping while it's open
+    pending_pick: Option<(PickKind, Receiver<Vec<PathBuf>>)>,
     config: AppConfig,
     entries: Vec<MediaEntry>,
     current_index: usize,
@@ -139,6 +151,7 @@ impl KadrApp {
             slideshow: SlideshowEngine::new(&config.slideshow),
             lua_script: LuaSlideshowScript::from_str(&config.slideshow.lua_script).ok(),
             fullscreen: false,
+            pending_pick: None,
             combine_dialog: CombineDialog::default(),
             combine_result_rx: Arc::new(Mutex::new(None)),
             folders_dialog: FoldersDialog::default(),
@@ -843,21 +856,69 @@ impl KadrApp {
     }
 
     fn pick_file(&mut self) {
-        crate::crash::com_check("before open-file dialog");
-        let picked = rfd::FileDialog::new()
-            .add_filter(
-                "Images",
-                &[
-                    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "avif", "heic",
-                    "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf",
-                ],
-            )
-            .add_filter("Videos", &["mp4", "mkv", "avi", "mov", "wmv", "webm"])
-            .add_filter("All media", &["*"])
-            .pick_file();
-        crate::crash::com_check("after open-file dialog");
-        if let Some(path) = picked {
-            self.open_paths(vec![path]);
+        self.start_pick(PickKind::File);
+    }
+
+    fn start_pick(&mut self, kind: PickKind) {
+        if self.pending_pick.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let run = move || {
+            crate::crash::com_check("before file dialog");
+            let picked = match kind {
+                PickKind::File => rfd::FileDialog::new()
+                    .add_filter(
+                        "Images",
+                        &[
+                            "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "avif",
+                            "heic", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf",
+                        ],
+                    )
+                    .add_filter("Videos", &["mp4", "mkv", "avi", "mov", "wmv", "webm"])
+                    .add_filter("All media", &["*"])
+                    .pick_file()
+                    .map(|p| vec![p]),
+                PickKind::CombineDest => rfd::FileDialog::new().pick_folder().map(|p| vec![p]),
+                PickKind::CombineSources | PickKind::AddFolders => {
+                    rfd::FileDialog::new().pick_folders()
+                }
+            };
+            crate::crash::com_check("after file dialog");
+            let _ = tx.send(picked.unwrap_or_default());
+        };
+        // shortcut: Windows keeps the blocking dialog on the UI thread (COM
+        // apartment), move it off too once that's tested there
+        if cfg!(target_os = "linux") {
+            thread::spawn(run);
+        } else {
+            run();
+        }
+        self.pending_pick = Some((kind, rx));
+    }
+
+    fn poll_pick(&mut self, ctx: &egui::Context) {
+        let Some((kind, rx)) = &self.pending_pick else {
+            return;
+        };
+        let Ok(paths) = rx.try_recv() else {
+            // a dead sender means the dialog thread died, drop it
+            if matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)) {
+                self.pending_pick = None;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        let kind = *kind;
+        self.pending_pick = None;
+        if paths.is_empty() {
+            return;
+        }
+        match kind {
+            PickKind::File => self.open_paths(paths),
+            PickKind::CombineSources => self.combine_dialog.source_paths.extend(paths),
+            PickKind::CombineDest => self.combine_dialog.dest_parent = paths.into_iter().next(),
+            PickKind::AddFolders => self.folders_dialog.paths.extend(paths),
         }
     }
 }
@@ -866,6 +927,7 @@ impl eframe::App for KadrApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         crate::crash::com_check("frame start");
         let ctx = ui.ctx().clone();
+        self.poll_pick(&ctx);
 
         // Force window onto the preferred monitor using physical-pixel SetWindowPos.
         // This runs once on the first frame, after Windows has had its chance to
@@ -1573,20 +1635,10 @@ impl eframe::App for KadrApp {
         let combine_action = self.combine_dialog.show(&ctx);
         match combine_action {
             CombineAction::PickSources => {
-                crate::crash::com_check("before combine-sources dialog");
-                let picked = rfd::FileDialog::new().pick_folders();
-                crate::crash::com_check("after combine-sources dialog");
-                if let Some(paths) = picked {
-                    self.combine_dialog.source_paths.extend(paths);
-                }
+                self.start_pick(PickKind::CombineSources);
             }
             CombineAction::PickDest => {
-                crate::crash::com_check("before combine-dest dialog");
-                let picked = rfd::FileDialog::new().pick_folder();
-                crate::crash::com_check("after combine-dest dialog");
-                if let Some(path) = picked {
-                    self.combine_dialog.dest_parent = Some(path);
-                }
+                self.start_pick(PickKind::CombineDest);
             }
             CombineAction::Run { sources, dest } => {
                 let total = count_images(&sources);
@@ -1616,12 +1668,7 @@ impl eframe::App for KadrApp {
 
         match self.folders_dialog.show(&ctx) {
             FoldersAction::AddFolders => {
-                crate::crash::com_check("before add-folders dialog");
-                let picked = rfd::FileDialog::new().pick_folders();
-                crate::crash::com_check("after add-folders dialog");
-                if let Some(paths) = picked {
-                    self.folders_dialog.paths.extend(paths);
-                }
+                self.start_pick(PickKind::AddFolders);
             }
             FoldersAction::Open(paths) => {
                 self.folders_dialog.open = false;
